@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Package Video Recorder</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local package evidence recorder</p>
+        <h1>Scan, record, save, search.</h1>
+      </div>
+      <div class="status-pill" id="cameraStatus">Camera idle</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel recorder-panel">
+        <div class="field-row">
+          <label for="invoice">Invoice / shipping receipt</label>
+          <input id="invoice" autocomplete="off" autofocus placeholder="Scan barcode here">
+        </div>
+
+        <div class="mode-row" role="radiogroup" aria-label="Recording type">
+          <label>
+            <input type="radio" name="mode" value="packing" checked>
+            Packing
+          </label>
+          <label>
+            <input type="radio" name="mode" value="return">
+            Return unboxing
+          </label>
+        </div>
+
+        <div class="video-shell">
+          <video id="preview" autoplay muted playsinline></video>
+          <div class="timer" id="timer">00:00</div>
+        </div>
+
+        <div class="actions">
+          <button id="startBtn" class="primary">Start recording</button>
+          <button id="stopBtn" disabled>Stop</button>
+          <button id="retryBtn" disabled>Retry</button>
+          <button id="saveBtn" disabled>Save recording</button>
+        </div>
+
+        <p class="hint">
+          Tip: Zebra LS2208 works like a keyboard. Put the cursor in the invoice field, scan,
+          then start recording.
+        </p>
+
+        <div class="divider" aria-hidden="true"></div>
+
+        <div class="upload-box">
+          <div>
+            <p class="eyebrow">No webcam needed</p>
+            <h2>Upload existing video</h2>
+          </div>
+          <div class="field-row">
+            <label for="videoUpload">Video file</label>
+            <input id="videoUpload" type="file" accept="video/*">
+          </div>
+          <button id="uploadBtn">Upload video</button>
+          <p class="hint">
+            Use the same invoice field and Packing/Return choice above, then select a video file.
+          </p>
+        </div>
+
+        <p class="message" id="message" role="status"></p>
+      </section>
+
+      <section class="panel search-panel">
+        <div class="search-header">
+          <div>
+            <p class="eyebrow">Find saved video</p>
+            <h2>Search recordings</h2>
+          </div>
+          <button id="refreshBtn">Refresh</button>
+        </div>
+
+        <div class="field-row">
+          <label for="search">Invoice / shipping receipt</label>
+          <input id="search" autocomplete="off" placeholder="Search invoice">
+        </div>
+
+        <div id="results" class="results" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="resultTemplate">
+      <article class="result-card">
+        <div>
+          <strong class="result-invoice"></strong>
+          <p class="result-meta"></p>
+        </div>
+        <video class="result-video" controls preload="metadata"></video>
+      </article>
+    </template>
+
+    <script>
+      window.APP_CONFIG = {
+        maxUploadMb: {{ max_upload_mb|tojson }}
+      };
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
