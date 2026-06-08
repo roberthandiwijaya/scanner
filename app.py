@@ -72,16 +72,28 @@ def safe_filename(invoice: str, mode: str, extension: str) -> str:
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    filename = row["filename"]
     return {
         "id": row["id"],
         "invoice": row["invoice"],
         "mode": row["mode"],
-        "filename": row["filename"],
+        "filename": filename,
+        "file_extension": Path(filename).suffix.lower().lstrip("."),
         "content_type": row["content_type"],
         "size_bytes": row["size_bytes"],
         "created_at": row["created_at"],
-        "video_url": f"/videos/{row['filename']}",
+        "video_url": f"/videos/{filename}",
     }
+
+
+def recording_path(filename: str) -> Path:
+    path = (VIDEO_DIR / filename).resolve()
+    try:
+        path.relative_to(VIDEO_DIR)
+    except ValueError as exc:
+        raise ValueError("Invalid recording path.") from exc
+    else:
+        return path
 
 
 @app.get("/")
@@ -152,6 +164,30 @@ def create_recording():
         row = db.execute("SELECT * FROM recordings WHERE id = ?", (cursor.lastrowid,)).fetchone()
 
     return jsonify(row_to_dict(row)), 201
+
+
+@app.delete("/api/recordings/<int:recording_id>")
+def delete_recording(recording_id: int):
+    with db_connect() as db:
+        row = db.execute("SELECT * FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+
+    if row is None:
+        return jsonify({"error": "Recording not found."}), 404
+
+    try:
+        path = recording_path(row["filename"])
+        if path.exists():
+            path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        app.logger.warning("Could not delete recording file %s: %s", row["filename"], error)
+        return jsonify({"error": "Could not delete recording file."}), 500
+
+    with db_connect() as db:
+        db.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+
+    return jsonify({"ok": True})
 
 
 @app.get("/videos/<path:filename>")

@@ -73,8 +73,8 @@
       <section class="panel search-panel">
         <div class="search-header">
           <div>
-            <p class="eyebrow">Find saved video</p>
-            <h2>Search recordings</h2>
+            <p class="eyebrow">Shipping label log</p>
+            <h2>Scanned labels</h2>
           </div>
           <button id="refreshBtn">Refresh</button>
         </div>
@@ -84,16 +84,42 @@
           <input id="search" autocomplete="off" placeholder="Search invoice">
         </div>
 
+        <p class="log-summary" id="resultsSummary"></p>
         <div id="results" class="results" aria-live="polite"></div>
       </section>
     </main>
 
     <template id="resultTemplate">
       <article class="result-card">
-        <div>
-          <strong class="result-invoice"></strong>
-          <p class="result-meta"></p>
+        <div class="result-topline">
+          <div>
+            <strong class="result-invoice"></strong>
+            <p class="result-meta"></p>
+          </div>
+          <button class="delete-recording" type="button">Delete</button>
         </div>
+        <dl class="result-details">
+          <div>
+            <dt>Label</dt>
+            <dd class="result-label"></dd>
+          </div>
+          <div>
+            <dt>Type</dt>
+            <dd class="result-mode"></dd>
+          </div>
+          <div>
+            <dt>Saved</dt>
+            <dd class="result-created"></dd>
+          </div>
+          <div>
+            <dt>Format</dt>
+            <dd class="result-format"></dd>
+          </div>
+          <div>
+            <dt>Size</dt>
+            <dd class="result-size"></dd>
+          </div>
+        </dl>
         <video class="result-video" controls preload="metadata"></video>
       </article>
     </template>

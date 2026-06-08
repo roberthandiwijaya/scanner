@@ -9,6 +9,7 @@ const videoUpload = document.querySelector("#videoUpload");
 const uploadBtn = document.querySelector("#uploadBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const searchInput = document.querySelector("#search");
+const resultsSummary = document.querySelector("#resultsSummary");
 const results = document.querySelector("#results");
 const resultTemplate = document.querySelector("#resultTemplate");
 const message = document.querySelector("#message");
@@ -81,9 +82,9 @@ async function ensureCamera() {
 
 function getMimeType() {
   const options = [
+    "video/webm;codecs=vp9",
     "video/webm;codecs=vp8",
-    "video/webm",
-    "video/mp4"
+    "video/webm"
   ];
 
   return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
@@ -99,11 +100,17 @@ async function startRecording() {
   }
 
   try {
+    const mimeType = getMimeType();
+    if (!mimeType) {
+      setMessage("This browser cannot record WebM video. Try Chrome, Edge, or Firefox.", true);
+      cameraStatus.textContent = "WebM unavailable";
+      return;
+    }
+
     const camera = await ensureCamera();
     chunks = [];
     recordedBlob = null;
-    const mimeType = getMimeType();
-    recorder = new MediaRecorder(camera, mimeType ? { mimeType } : undefined);
+    recorder = new MediaRecorder(camera, { mimeType });
 
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
@@ -112,7 +119,7 @@ async function startRecording() {
     });
 
     recorder.addEventListener("stop", () => {
-      recordedBlob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+      recordedBlob = new Blob(chunks, { type: recorder.mimeType || mimeType });
       stopTimer();
       setRecordingUi(false);
       setMessage("Recording stopped. Save it, or retry if you want to record again.");
@@ -225,26 +232,82 @@ async function uploadExistingVideo() {
 
 function describeRecording(item) {
   const date = new Date(item.created_at);
-  const sizeMb = item.size_bytes / 1024 / 1024;
-  const mode = item.mode === "return" ? "Return unboxing" : "Packing";
-  return `${mode} · ${date.toLocaleString()} · ${sizeMb.toFixed(1)} MB`;
+  return `${formatMode(item.mode)} - ${date.toLocaleString()} - ${formatFileSize(item.size_bytes)}`;
+}
+
+function formatMode(mode) {
+  return mode === "return" ? "Return unboxing" : "Packing";
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatVideoFormat(item) {
+  const extension = item.file_extension || item.filename.split(".").pop() || "video";
+  return `${extension.toUpperCase()} (${item.content_type || "video"})`;
+}
+
+async function deleteRecording(item, card) {
+  if (!window.confirm(`Delete recording for ${item.invoice}? This cannot be undone.`)) {
+    return;
+  }
+
+  const deleteButton = card.querySelector(".delete-recording");
+  deleteButton.disabled = true;
+  deleteButton.textContent = "Deleting...";
+  setMessage("Deleting recording...");
+
+  try {
+    const response = await fetch(`/api/recordings/${item.id}`, {
+      method: "DELETE"
+    });
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Delete failed.");
+    }
+
+    await loadResults();
+    setMessage("Recording deleted.");
+  } catch (error) {
+    deleteButton.disabled = false;
+    deleteButton.textContent = "Delete";
+    setMessage(`Delete error: ${error.message}`, true);
+  }
 }
 
 async function loadResults(query = searchInput.value.trim()) {
   const response = await fetch(`/api/recordings?q=${encodeURIComponent(query)}`);
   const items = await response.json();
   results.textContent = "";
+  resultsSummary.textContent = "";
 
   if (!items.length) {
     results.textContent = query ? "No recordings found." : "No recordings saved yet.";
     return;
   }
 
+  resultsSummary.textContent = `Showing ${items.length} scanned label ${items.length === 1 ? "log" : "logs"}.`;
+
   for (const item of items) {
     const node = resultTemplate.content.cloneNode(true);
+    const card = node.querySelector(".result-card");
+    const deleteButton = node.querySelector(".delete-recording");
+    const date = new Date(item.created_at);
     node.querySelector(".result-invoice").textContent = item.invoice;
     node.querySelector(".result-meta").textContent = describeRecording(item);
+    node.querySelector(".result-label").textContent = item.invoice;
+    node.querySelector(".result-mode").textContent = formatMode(item.mode);
+    node.querySelector(".result-created").textContent = date.toLocaleString();
+    node.querySelector(".result-format").textContent = formatVideoFormat(item);
+    node.querySelector(".result-size").textContent = formatFileSize(item.size_bytes);
     node.querySelector(".result-video").src = item.video_url;
+    deleteButton.addEventListener("click", () => deleteRecording(item, card));
     results.appendChild(node);
   }
 }
