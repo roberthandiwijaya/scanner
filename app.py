@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
@@ -18,6 +18,8 @@ DB_PATH = DATA_DIR / "recordings.sqlite3"
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "512"))
 ALLOWED_MODES = {"packing", "return"}
 ALLOWED_VIDEO_EXTENSIONS = {".webm", ".mp4", ".mov", ".m4v", ".avi", ".mkv"}
+DEFAULT_PAGE_SIZE = 10
+MAX_PAGE_SIZE = 50
 
 
 app = Flask(__name__)
@@ -96,6 +98,58 @@ def recording_path(filename: str) -> Path:
         return path
 
 
+def parse_positive_int(value: Optional[str], default: int, maximum: Optional[int] = None) -> int:
+    try:
+        parsed = int(value or default)
+    except ValueError:
+        parsed = default
+
+    parsed = max(parsed, 1)
+    if maximum is not None:
+        parsed = min(parsed, maximum)
+    return parsed
+
+
+def parse_date_bound(value: str, end_of_day: bool = False) -> str | None:
+    if not value:
+        return None
+
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+    if end_of_day:
+        parsed += timedelta(days=1)
+
+    return parsed.isoformat()
+
+
+def recording_filters() -> tuple[str, list[Any]]:
+    query = request.args.get("q", "").strip()
+    date_from = parse_date_bound(request.args.get("date_from", "").strip())
+    date_to = parse_date_bound(request.args.get("date_to", "").strip(), end_of_day=True)
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if query:
+        clauses.append("invoice LIKE ?")
+        params.append(f"%{query}%")
+
+    if date_from:
+        clauses.append("created_at >= ?")
+        params.append(date_from)
+
+    if date_to:
+        clauses.append("created_at < ?")
+        params.append(date_to)
+
+    if not clauses:
+        return "", params
+
+    return " WHERE " + " AND ".join(clauses), params
+
+
 @app.get("/")
 def index() -> str:
     return render_template("index.html", max_upload_mb=MAX_UPLOAD_MB)
@@ -103,20 +157,105 @@ def index() -> str:
 
 @app.get("/api/recordings")
 def list_recordings():
-    query = request.args.get("q", "").strip()
-    params: list[Any] = []
-    sql = "SELECT * FROM recordings"
-
-    if query:
-        sql += " WHERE invoice LIKE ?"
-        params.append(f"%{query}%")
-
-    sql += " ORDER BY created_at DESC LIMIT 100"
+    where_sql, params = recording_filters()
+    page = parse_positive_int(request.args.get("page"), 1)
+    per_page = parse_positive_int(request.args.get("per_page"), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
+    offset = (page - 1) * per_page
 
     with db_connect() as db:
-        rows = db.execute(sql, params).fetchall()
+        total = db.execute(f"SELECT COUNT(*) FROM recordings{where_sql}", params).fetchone()[0]
+        rows = db.execute(
+            f"""
+            SELECT * FROM recordings{where_sql}
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, per_page, offset],
+        ).fetchall()
 
-    return jsonify([row_to_dict(row) for row in rows])
+    total_pages = max((total + per_page - 1) // per_page, 1)
+    return jsonify(
+        {
+            "items": [row_to_dict(row) for row in rows],
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+        }
+    )
+
+
+@app.get("/api/recordings/duplicate")
+def duplicate_recording():
+    invoice = sanitize_invoice(request.args.get("invoice", ""))
+
+    if not invoice:
+        return jsonify({"invoice": "", "count": 0, "latest": None})
+
+    with db_connect() as db:
+        count = db.execute("SELECT COUNT(*) FROM recordings WHERE invoice = ?", (invoice,)).fetchone()[0]
+        latest = db.execute(
+            "SELECT * FROM recordings WHERE invoice = ? ORDER BY created_at DESC LIMIT 1",
+            (invoice,),
+        ).fetchone()
+
+    return jsonify(
+        {
+            "invoice": invoice,
+            "count": count,
+            "latest": row_to_dict(latest) if latest else None,
+        }
+    )
+
+
+@app.get("/api/summary")
+def recording_summary():
+    today = datetime.now(timezone.utc).date()
+    today_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+    tomorrow_start = (
+        datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)
+    ).isoformat()
+    daily_start = (
+        datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=6)
+    ).isoformat()
+
+    with db_connect() as db:
+        totals = db.execute(
+            "SELECT COUNT(*) AS total_recordings, COALESCE(SUM(size_bytes), 0) AS total_size_bytes FROM recordings"
+        ).fetchone()
+        today_recordings = db.execute(
+            "SELECT COUNT(*) FROM recordings WHERE created_at >= ? AND created_at < ?",
+            (today_start, tomorrow_start),
+        ).fetchone()[0]
+        daily_rows = db.execute(
+            """
+            SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count
+            FROM recordings
+            WHERE created_at >= ?
+            GROUP BY day
+            ORDER BY day DESC
+            LIMIT 7
+            """,
+            (daily_start,),
+        ).fetchall()
+
+    daily_counts = {row["day"]: row["count"] for row in daily_rows}
+    days = [
+        {
+            "date": (today - timedelta(days=offset)).isoformat(),
+            "count": daily_counts.get((today - timedelta(days=offset)).isoformat(), 0),
+        }
+        for offset in range(7)
+    ]
+
+    return jsonify(
+        {
+            "total_recordings": totals["total_recordings"],
+            "total_size_bytes": totals["total_size_bytes"],
+            "today_recordings": today_recordings,
+            "daily_counts": days,
+        }
+    )
 
 
 @app.post("/api/recordings")

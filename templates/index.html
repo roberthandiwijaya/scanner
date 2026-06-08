@@ -12,14 +12,40 @@
         <p class="eyebrow">Local package evidence recorder</p>
         <h1>Scan, record, save, search.</h1>
       </div>
-      <div class="status-pill" id="cameraStatus">Camera idle</div>
+      <div class="top-actions">
+        <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
+        <div class="status-pill" id="cameraStatus">Camera idle</div>
+      </div>
     </header>
+
+    <section class="dashboard" aria-label="Recording summary">
+      <div class="metric">
+        <span>Total videos</span>
+        <strong id="totalRecordings">0</strong>
+      </div>
+      <div class="metric">
+        <span>Total storage</span>
+        <strong id="totalStorage">0 KB</strong>
+      </div>
+      <div class="metric">
+        <span>Today's scans</span>
+        <strong id="todayScans">0</strong>
+      </div>
+      <div class="daily-summary">
+        <div>
+          <span>Daily scan count</span>
+          <strong>Last 7 days</strong>
+        </div>
+        <div id="dailyCounts" class="daily-counts"></div>
+      </div>
+    </section>
 
     <main class="layout">
       <section class="panel recorder-panel">
         <div class="field-row">
           <label for="invoice">Invoice / shipping receipt</label>
           <input id="invoice" autocomplete="off" autofocus placeholder="Scan barcode here">
+          <p class="inline-warning" id="duplicateWarning"></p>
         </div>
 
         <div class="mode-row" role="radiogroup" aria-label="Recording type">
@@ -36,6 +62,7 @@
         <div class="video-shell">
           <video id="preview" autoplay muted playsinline></video>
           <div class="timer" id="timer">00:00</div>
+          <div class="countdown" id="countdown" hidden></div>
         </div>
 
         <div class="actions">
@@ -79,13 +106,29 @@
           <button id="refreshBtn">Refresh</button>
         </div>
 
-        <div class="field-row">
-          <label for="search">Invoice / shipping receipt</label>
-          <input id="search" autocomplete="off" placeholder="Search invoice">
+        <div class="filter-grid">
+          <div class="field-row">
+            <label for="search">Invoice / shipping receipt</label>
+            <input id="search" autocomplete="off" placeholder="Search invoice">
+          </div>
+          <div class="field-row">
+            <label for="dateFrom">From date</label>
+            <input id="dateFrom" type="date">
+          </div>
+          <div class="field-row">
+            <label for="dateTo">To date</label>
+            <input id="dateTo" type="date">
+          </div>
+          <button id="clearFiltersBtn" type="button">Clear filters</button>
         </div>
 
         <p class="log-summary" id="resultsSummary"></p>
         <div id="results" class="results" aria-live="polite"></div>
+        <div class="pagination" id="pagination" hidden>
+          <button id="prevPageBtn" type="button">Previous</button>
+          <span id="pageInfo"></span>
+          <button id="nextPageBtn" type="button">Next</button>
+        </div>
       </section>
     </main>
 

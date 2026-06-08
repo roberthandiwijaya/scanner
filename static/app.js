@@ -1,6 +1,8 @@
 const invoiceInput = document.querySelector("#invoice");
+const duplicateWarning = document.querySelector("#duplicateWarning");
 const modeInputs = [...document.querySelectorAll("input[name='mode']")];
 const preview = document.querySelector("#preview");
+const countdown = document.querySelector("#countdown");
 const startBtn = document.querySelector("#startBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const retryBtn = document.querySelector("#retryBtn");
@@ -9,12 +11,27 @@ const videoUpload = document.querySelector("#videoUpload");
 const uploadBtn = document.querySelector("#uploadBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
 const searchInput = document.querySelector("#search");
+const dateFromInput = document.querySelector("#dateFrom");
+const dateToInput = document.querySelector("#dateTo");
+const clearFiltersBtn = document.querySelector("#clearFiltersBtn");
 const resultsSummary = document.querySelector("#resultsSummary");
 const results = document.querySelector("#results");
 const resultTemplate = document.querySelector("#resultTemplate");
+const pagination = document.querySelector("#pagination");
+const prevPageBtn = document.querySelector("#prevPageBtn");
+const nextPageBtn = document.querySelector("#nextPageBtn");
+const pageInfo = document.querySelector("#pageInfo");
 const message = document.querySelector("#message");
 const timer = document.querySelector("#timer");
 const cameraStatus = document.querySelector("#cameraStatus");
+const themeToggle = document.querySelector("#themeToggle");
+const totalRecordings = document.querySelector("#totalRecordings");
+const totalStorage = document.querySelector("#totalStorage");
+const todayScans = document.querySelector("#todayScans");
+const dailyCounts = document.querySelector("#dailyCounts");
+
+const PER_PAGE = 10;
+const COUNTDOWN_SECONDS = 3;
 
 let stream = null;
 let recorder = null;
@@ -22,6 +39,10 @@ let chunks = [];
 let recordedBlob = null;
 let startedAt = 0;
 let timerHandle = null;
+let searchDebounce = null;
+let duplicateDebounce = null;
+let currentPage = 1;
+let currentTotalPages = 1;
 
 function selectedMode() {
   return modeInputs.find((input) => input.checked).value;
@@ -43,6 +64,17 @@ function setRecordingUi(isRecording) {
   });
 }
 
+function setCountdownUi(isCountingDown) {
+  startBtn.disabled = isCountingDown;
+  stopBtn.disabled = true;
+  retryBtn.disabled = true;
+  saveBtn.disabled = true;
+  invoiceInput.disabled = isCountingDown;
+  modeInputs.forEach((input) => {
+    input.disabled = isCountingDown;
+  });
+}
+
 function formatTimer(seconds) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
   const rest = Math.floor(seconds % 60).toString().padStart(2, "0");
@@ -60,6 +92,27 @@ function startTimer() {
 function stopTimer() {
   window.clearInterval(timerHandle);
   timerHandle = null;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runCountdown() {
+  setCountdownUi(true);
+  countdown.hidden = false;
+
+  for (let value = COUNTDOWN_SECONDS; value > 0; value -= 1) {
+    countdown.textContent = value;
+    cameraStatus.textContent = `Recording starts in ${value}`;
+    await wait(1000);
+  }
+
+  countdown.textContent = "GO";
+  cameraStatus.textContent = "Recording";
+  await wait(250);
+  countdown.hidden = true;
+  countdown.textContent = "";
 }
 
 async function ensureCamera() {
@@ -99,17 +152,22 @@ async function startRecording() {
     return;
   }
 
-  try {
-    const mimeType = getMimeType();
-    if (!mimeType) {
-      setMessage("This browser cannot record WebM video. Try Chrome, Edge, or Firefox.", true);
-      cameraStatus.textContent = "WebM unavailable";
-      return;
-    }
+  const mimeType = getMimeType();
+  if (!mimeType) {
+    setMessage("This browser cannot record WebM video. Try Chrome, Edge, or Firefox.", true);
+    cameraStatus.textContent = "WebM unavailable";
+    return;
+  }
 
+  try {
     const camera = await ensureCamera();
     chunks = [];
     recordedBlob = null;
+    timer.textContent = "00:00";
+    setMessage("Get ready...");
+
+    await runCountdown();
+
     recorder = new MediaRecorder(camera, { mimeType });
 
     recorder.addEventListener("dataavailable", (event) => {
@@ -132,6 +190,9 @@ async function startRecording() {
     setMessage("Recording...");
     cameraStatus.textContent = "Recording";
   } catch (error) {
+    countdown.hidden = true;
+    countdown.textContent = "";
+    setRecordingUi(false);
     setMessage(`Camera error: ${error.message}`, true);
     cameraStatus.textContent = "Camera unavailable";
   }
@@ -171,7 +232,8 @@ async function uploadVideoBlob(videoBlob, fileName = "recording.webm") {
   }
 
   searchInput.value = payload.invoice;
-  await loadResults(payload.invoice);
+  currentPage = 1;
+  await Promise.all([loadResults(payload.invoice), loadSummary(), checkDuplicateInvoice()]);
   return payload;
 }
 
@@ -191,6 +253,8 @@ async function saveRecording() {
     setMessage("Saved locally.");
     retryRecording();
     invoiceInput.value = "";
+    duplicateWarning.textContent = "";
+    duplicateWarning.classList.remove("active");
     invoiceInput.focus();
   } catch (error) {
     setMessage(`Save error: ${error.message}`, true);
@@ -222,17 +286,14 @@ async function uploadExistingVideo() {
     setMessage("Uploaded and saved locally.");
     videoUpload.value = "";
     invoiceInput.value = "";
+    duplicateWarning.textContent = "";
+    duplicateWarning.classList.remove("active");
     invoiceInput.focus();
   } catch (error) {
     setMessage(`Upload error: ${error.message}`, true);
   } finally {
     uploadBtn.disabled = false;
   }
-}
-
-function describeRecording(item) {
-  const date = new Date(item.created_at);
-  return `${formatMode(item.mode)} - ${date.toLocaleString()} - ${formatFileSize(item.size_bytes)}`;
 }
 
 function formatMode(mode) {
@@ -250,6 +311,46 @@ function formatFileSize(bytes) {
 function formatVideoFormat(item) {
   const extension = item.file_extension || item.filename.split(".").pop() || "video";
   return `${extension.toUpperCase()} (${item.content_type || "video"})`;
+}
+
+function describeRecording(item) {
+  const date = new Date(item.created_at);
+  return `${formatMode(item.mode)} - ${date.toLocaleString()} - ${formatFileSize(item.size_bytes)}`;
+}
+
+function buildRecordingParams(query = searchInput.value.trim()) {
+  const params = new URLSearchParams({
+    page: String(currentPage),
+    per_page: String(PER_PAGE)
+  });
+
+  if (query) {
+    params.set("q", query);
+  }
+
+  if (dateFromInput.value) {
+    params.set("date_from", dateFromInput.value);
+  }
+
+  if (dateToInput.value) {
+    params.set("date_to", dateToInput.value);
+  }
+
+  return params;
+}
+
+function setLoadingState(text) {
+  results.innerHTML = `<div class="empty-state loading-state">${text}</div>`;
+  resultsSummary.textContent = "";
+}
+
+function setEmptyState(text, detail = "") {
+  results.innerHTML = `
+    <div class="empty-state">
+      <strong>${text}</strong>
+      ${detail ? `<span>${detail}</span>` : ""}
+    </div>
+  `;
 }
 
 async function deleteRecording(item, card) {
@@ -272,7 +373,7 @@ async function deleteRecording(item, card) {
       throw new Error(payload.error || "Delete failed.");
     }
 
-    await loadResults();
+    await Promise.all([loadResults(), loadSummary(), checkDuplicateInvoice()]);
     setMessage("Recording deleted.");
   } catch (error) {
     deleteButton.disabled = false;
@@ -281,41 +382,167 @@ async function deleteRecording(item, card) {
   }
 }
 
+function renderRecording(item) {
+  const node = resultTemplate.content.cloneNode(true);
+  const card = node.querySelector(".result-card");
+  const deleteButton = node.querySelector(".delete-recording");
+  const date = new Date(item.created_at);
+
+  node.querySelector(".result-invoice").textContent = item.invoice;
+  node.querySelector(".result-meta").textContent = describeRecording(item);
+  node.querySelector(".result-label").textContent = item.invoice;
+  node.querySelector(".result-mode").textContent = formatMode(item.mode);
+  node.querySelector(".result-created").textContent = date.toLocaleString();
+  node.querySelector(".result-format").textContent = formatVideoFormat(item);
+  node.querySelector(".result-size").textContent = formatFileSize(item.size_bytes);
+  node.querySelector(".result-video").src = item.video_url;
+  deleteButton.addEventListener("click", () => deleteRecording(item, card));
+
+  results.appendChild(node);
+}
+
+function updatePagination(payload) {
+  currentPage = payload.page;
+  currentTotalPages = payload.total_pages;
+  pagination.hidden = payload.total_pages <= 1;
+  pageInfo.textContent = `Page ${payload.page} of ${payload.total_pages}`;
+  prevPageBtn.disabled = payload.page <= 1;
+  nextPageBtn.disabled = payload.page >= payload.total_pages;
+}
+
 async function loadResults(query = searchInput.value.trim()) {
-  const response = await fetch(`/api/recordings?q=${encodeURIComponent(query)}`);
-  const items = await response.json();
-  results.textContent = "";
-  resultsSummary.textContent = "";
+  setLoadingState("Loading scanned label logs...");
 
-  if (!items.length) {
-    results.textContent = query ? "No recordings found." : "No recordings saved yet.";
-    return;
-  }
+  try {
+    const response = await fetch(`/api/recordings?${buildRecordingParams(query).toString()}`);
+    const payload = await response.json();
 
-  resultsSummary.textContent = `Showing ${items.length} scanned label ${items.length === 1 ? "log" : "logs"}.`;
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not load recordings.");
+    }
 
-  for (const item of items) {
-    const node = resultTemplate.content.cloneNode(true);
-    const card = node.querySelector(".result-card");
-    const deleteButton = node.querySelector(".delete-recording");
-    const date = new Date(item.created_at);
-    node.querySelector(".result-invoice").textContent = item.invoice;
-    node.querySelector(".result-meta").textContent = describeRecording(item);
-    node.querySelector(".result-label").textContent = item.invoice;
-    node.querySelector(".result-mode").textContent = formatMode(item.mode);
-    node.querySelector(".result-created").textContent = date.toLocaleString();
-    node.querySelector(".result-format").textContent = formatVideoFormat(item);
-    node.querySelector(".result-size").textContent = formatFileSize(item.size_bytes);
-    node.querySelector(".result-video").src = item.video_url;
-    deleteButton.addEventListener("click", () => deleteRecording(item, card));
-    results.appendChild(node);
+    results.textContent = "";
+    updatePagination(payload);
+
+    if (!payload.items.length) {
+      resultsSummary.textContent = "";
+      const hasFilters = query || dateFromInput.value || dateToInput.value;
+      setEmptyState(
+        hasFilters ? "No matching scanned labels." : "No scanned labels saved yet.",
+        hasFilters ? "Try a different label or date range." : "Scan a label, record, and save to build the log."
+      );
+      return;
+    }
+
+    const shownStart = (payload.page - 1) * payload.per_page + 1;
+    const shownEnd = shownStart + payload.items.length - 1;
+    resultsSummary.textContent = `Showing ${shownStart}-${shownEnd} of ${payload.total} scanned label ${
+      payload.total === 1 ? "log" : "logs"
+    }.`;
+
+    payload.items.forEach(renderRecording);
+  } catch (error) {
+    pagination.hidden = true;
+    resultsSummary.textContent = "";
+    setEmptyState("Could not load scanned labels.", error.message);
   }
 }
 
-let searchDebounce = null;
+function renderDailyCounts(days) {
+  dailyCounts.textContent = "";
+  const maxCount = Math.max(...days.map((day) => day.count), 1);
+
+  days.forEach((day) => {
+    const item = document.createElement("div");
+    const label = document.createElement("span");
+    const bar = document.createElement("i");
+    const count = document.createElement("strong");
+    const date = new Date(`${day.date}T00:00:00`);
+
+    label.textContent = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    bar.style.setProperty("--bar-width", `${Math.max((day.count / maxCount) * 100, day.count ? 10 : 0)}%`);
+    count.textContent = day.count;
+
+    item.append(label, bar, count);
+    dailyCounts.appendChild(item);
+  });
+}
+
+async function loadSummary() {
+  try {
+    const response = await fetch("/api/summary");
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not load summary.");
+    }
+
+    totalRecordings.textContent = payload.total_recordings;
+    totalStorage.textContent = formatFileSize(payload.total_size_bytes);
+    todayScans.textContent = payload.today_recordings;
+    renderDailyCounts(payload.daily_counts);
+  } catch (error) {
+    totalRecordings.textContent = "-";
+    totalStorage.textContent = "-";
+    todayScans.textContent = "-";
+    dailyCounts.textContent = "Summary unavailable";
+  }
+}
+
+async function checkDuplicateInvoice(invoice = invoiceInput.value.trim()) {
+  if (!invoice) {
+    duplicateWarning.textContent = "";
+    duplicateWarning.classList.remove("active");
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/recordings/duplicate?invoice=${encodeURIComponent(invoice)}`);
+    const payload = await response.json();
+
+    if (!response.ok || !payload.count) {
+      duplicateWarning.textContent = "";
+      duplicateWarning.classList.remove("active");
+      return;
+    }
+
+    const latest = payload.latest ? new Date(payload.latest.created_at).toLocaleString() : "unknown time";
+    duplicateWarning.textContent = `Duplicate label warning: ${payload.count} recording${
+      payload.count === 1 ? "" : "s"
+    } already saved. Latest: ${latest}.`;
+    duplicateWarning.classList.add("active");
+  } catch (error) {
+    duplicateWarning.textContent = "";
+    duplicateWarning.classList.remove("active");
+  }
+}
+
 function queueSearch() {
   window.clearTimeout(searchDebounce);
-  searchDebounce = window.setTimeout(() => loadResults(), 250);
+  searchDebounce = window.setTimeout(() => {
+    currentPage = 1;
+    loadResults();
+  }, 250);
+}
+
+function queueDuplicateCheck() {
+  window.clearTimeout(duplicateDebounce);
+  duplicateDebounce = window.setTimeout(() => checkDuplicateInvoice(), 300);
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem("scanner-theme", theme);
+  themeToggle.textContent = theme === "dark" ? "Light mode" : "Dark mode";
+}
+
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}
+
+function initTheme() {
+  const savedTheme = localStorage.getItem("scanner-theme");
+  applyTheme(savedTheme === "dark" ? "dark" : "light");
 }
 
 startBtn.addEventListener("click", startRecording);
@@ -323,8 +550,41 @@ stopBtn.addEventListener("click", stopRecording);
 retryBtn.addEventListener("click", retryRecording);
 saveBtn.addEventListener("click", saveRecording);
 uploadBtn.addEventListener("click", uploadExistingVideo);
-refreshBtn.addEventListener("click", () => loadResults());
+refreshBtn.addEventListener("click", () => {
+  currentPage = 1;
+  Promise.all([loadResults(), loadSummary()]);
+});
 searchInput.addEventListener("input", queueSearch);
+dateFromInput.addEventListener("change", () => {
+  currentPage = 1;
+  loadResults();
+});
+dateToInput.addEventListener("change", () => {
+  currentPage = 1;
+  loadResults();
+});
+clearFiltersBtn.addEventListener("click", () => {
+  searchInput.value = "";
+  dateFromInput.value = "";
+  dateToInput.value = "";
+  currentPage = 1;
+  loadResults();
+});
+prevPageBtn.addEventListener("click", () => {
+  if (currentPage > 1) {
+    currentPage -= 1;
+    loadResults();
+  }
+});
+nextPageBtn.addEventListener("click", () => {
+  if (currentPage < currentTotalPages) {
+    currentPage += 1;
+    loadResults();
+  }
+});
+themeToggle.addEventListener("click", toggleTheme);
+invoiceInput.addEventListener("input", queueDuplicateCheck);
+invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
 
 invoiceInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -333,5 +593,6 @@ invoiceInput.addEventListener("keydown", (event) => {
   }
 });
 
+initTheme();
 setRecordingUi(false);
-loadResults();
+Promise.all([loadResults(), loadSummary()]);

@@ -9,9 +9,12 @@ The app is designed for old Windows PCs and barcode scanner workflows:
 - Start recording from the webcam.
 - Stop, retry if needed, then save.
 - Or upload an existing packing / return unboxing video without using the webcam.
-- Search saved videos by invoice or shipping receipt.
+- Search saved videos by invoice or shipping receipt and date range.
 - Review scanned shipping label log details.
 - Delete old recordings from the UI.
+- See dashboard totals, daily scan counts, and storage usage.
+- Get duplicate label warnings before recording.
+- Use light or dark mode.
 
 ## Recommended Strategy
 
@@ -44,6 +47,8 @@ http://localhost:8000
 ```
 
 Webcam access works on `localhost` in modern browsers.
+
+The camera has a short countdown before recording starts, so the operator has a moment to position the package or label.
 
 ## Access From Another Computer On The LAN
 
@@ -119,6 +124,24 @@ The search panel shows a log of scanned shipping labels and their saved recordin
 - Video preview.
 - Delete action.
 
+The log supports:
+
+- Date range filtering.
+- Pagination for large history lists.
+- Duplicate label warnings when the same invoice / shipping receipt already exists.
+- Clear loading and empty states.
+
+## Dashboard
+
+The dashboard shows:
+
+- Total saved videos.
+- Total storage used.
+- Today's scan count.
+- Daily scan counts for the last 7 days.
+
+The UI also includes a dark mode toggle for low-light work areas.
+
 ## Configuration
 
 Environment variables:
@@ -143,5 +166,4 @@ Useful next features:
 
 - Export recordings by date range.
 - Add operator name.
-- Add optional maximum recording duration.
 - Add external drive backup.
