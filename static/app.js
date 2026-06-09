@@ -7,6 +7,7 @@ const startBtn = document.querySelector("#startBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const retryBtn = document.querySelector("#retryBtn");
 const saveBtn = document.querySelector("#saveBtn");
+const cameraOffBtn = document.querySelector("#cameraOffBtn");
 const videoUpload = document.querySelector("#videoUpload");
 const uploadBtn = document.querySelector("#uploadBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
@@ -58,6 +59,7 @@ function setRecordingUi(isRecording) {
   stopBtn.disabled = !isRecording;
   retryBtn.disabled = isRecording || !recordedBlob;
   saveBtn.disabled = isRecording || !recordedBlob;
+  cameraOffBtn.disabled = isRecording || !stream;
   invoiceInput.disabled = isRecording;
   modeInputs.forEach((input) => {
     input.disabled = isRecording;
@@ -69,6 +71,7 @@ function setCountdownUi(isCountingDown) {
   stopBtn.disabled = true;
   retryBtn.disabled = true;
   saveBtn.disabled = true;
+  cameraOffBtn.disabled = true;
   invoiceInput.disabled = isCountingDown;
   modeInputs.forEach((input) => {
     input.disabled = isCountingDown;
@@ -130,6 +133,7 @@ async function ensureCamera() {
   });
   preview.srcObject = stream;
   cameraStatus.textContent = "Camera ready";
+  cameraOffBtn.disabled = false;
   return stream;
 }
 
@@ -202,6 +206,28 @@ function stopRecording() {
   if (recorder && recorder.state === "recording") {
     recorder.stop();
   }
+}
+
+function stopWebcamPreview() {
+  if (recorder && recorder.state === "recording") {
+    setMessage("Stop the recording before turning off the webcam preview.", true);
+    return;
+  }
+
+  if (!stream) {
+    setMessage("Webcam preview is already stopped.");
+    cameraOffBtn.disabled = true;
+    return;
+  }
+
+  stream.getTracks().forEach((track) => track.stop());
+  stream = null;
+  preview.srcObject = null;
+  countdown.hidden = true;
+  countdown.textContent = "";
+  cameraOffBtn.disabled = true;
+  cameraStatus.textContent = "Camera stopped";
+  setMessage("Webcam preview stopped. Start recording will turn it back on.");
 }
 
 function retryRecording() {
@@ -549,6 +575,7 @@ startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
 retryBtn.addEventListener("click", retryRecording);
 saveBtn.addEventListener("click", saveRecording);
+cameraOffBtn.addEventListener("click", stopWebcamPreview);
 uploadBtn.addEventListener("click", uploadExistingVideo);
 refreshBtn.addEventListener("click", () => {
   currentPage = 1;

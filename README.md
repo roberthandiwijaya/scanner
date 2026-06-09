@@ -50,6 +50,8 @@ Webcam access works on `localhost` in modern browsers.
 
 The camera has a short countdown before recording starts, so the operator has a moment to position the package or label.
 
+Use `Stop webcam preview` to turn off the live camera preview after recording or when the workstation is idle. The next `Start recording` action will request and show the camera again.
+
 ## Access From Another Computer On The LAN
 
 Start the app on the host computer:
