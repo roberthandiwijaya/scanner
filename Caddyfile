@@ -1,0 +1,8 @@
+{
+	default_sni {$LAN_HOST}
+}
+
+https://{$LAN_HOST}:8443 {
+	tls internal
+	reverse_proxy recorder:8000
+}

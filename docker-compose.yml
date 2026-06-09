@@ -9,3 +9,17 @@ services:
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - recorder
+    ports:
+      - "8443:8443"
+    environment:
+      LAN_HOST: ${LAN_HOST:-192.168.100.13}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
+    restart: unless-stopped

@@ -52,6 +52,19 @@ The camera has a short countdown before recording starts, so the operator has a 
 
 Use `Stop webcam preview` to turn off the live camera preview after recording or when the workstation is idle. The next `Start recording` action will request and show the camera again.
 
+HTTPS is also available through Caddy:
+
+```text
+https://192.168.100.13:8443
+```
+
+If the host computer's LAN IP changes, set `LAN_HOST` to the new IP before starting Docker Compose:
+
+```powershell
+$env:LAN_HOST="192.168.100.13"
+docker compose up --build
+```
+
 ## Access From Another Computer On The LAN
 
 Start the app on the host computer:
@@ -75,18 +88,36 @@ Look for the `IPv4 Address`, for example:
 From another computer on the same network, open:
 
 ```text
-http://192.168.1.50:8000
+https://<host-ip>:8443
 ```
 
-Replace `192.168.1.50` with the host computer's actual IP address.
+For this host computer right now, that is:
 
-If the page does not load, allow inbound TCP traffic on port `8000` in Windows Firewall on the host computer:
+```text
+https://192.168.100.13:8443
+```
+
+If the page does not load, allow inbound TCP traffic on port `8443` in Windows Firewall on the host computer:
 
 ```powershell
-New-NetFirewallRule -DisplayName "Scanner App 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
+New-NetFirewallRule -DisplayName "Scanner HTTPS 8443" -Direction Inbound -Protocol TCP -LocalPort 8443 -Action Allow
 ```
 
-Important: browsers usually allow camera recording only on `localhost` or HTTPS. Other LAN users can open the app to search, watch, delete, or upload existing videos, but recording from their own webcam over `http://host-ip:8000` may be blocked unless HTTPS is configured.
+Important: browsers usually allow camera recording only on `localhost` or HTTPS. Other LAN users should use the HTTPS address if they need to record from their own webcam.
+
+The first HTTPS setup uses Caddy's internal certificate authority. On each LAN computer that needs to use the camera, install/trust this certificate after Caddy has started:
+
+```text
+data/caddy/data/caddy/pki/authorities/local/root.crt
+```
+
+For example, copy `root.crt` to the client computer and run:
+
+```powershell
+certutil -user -addstore Root root.crt
+```
+
+Without trusting that certificate, the browser may show a warning and may still block webcam access.
 
 ## Barcode Scanner Notes
 
