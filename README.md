@@ -184,6 +184,40 @@ Environment variables:
 
 In Docker Compose, `./data` on the host is mounted to `/app/data` in the container.
 
+## Windows Auto Start
+
+Both Docker Compose services use `restart: unless-stopped`. That means Docker will restart them when Docker Desktop starts, unless you manually stopped them.
+
+This repo also includes:
+
+```text
+scripts/start-scanner.ps1
+```
+
+The script waits for Docker Desktop, detects the host computer's LAN IP, sets `LAN_HOST`, and runs:
+
+```powershell
+docker compose up -d
+```
+
+To run it automatically when this Windows user logs in, create a shortcut in:
+
+```text
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+```
+
+The shortcut should run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\rober\Documents\scanner\scanner\scripts\start-scanner.ps1"
+```
+
+Startup logs are written to:
+
+```text
+data/startup.log
+```
+
 ## Hardware Guidance
 
 For an i3-3xxx computer:
