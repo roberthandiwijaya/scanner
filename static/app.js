@@ -231,6 +231,10 @@ function stopWebcamPreview() {
 }
 
 function retryRecording() {
+  if (recordedBlob && !window.confirm("Are you sure you want to retry? The current recording data cannot be restored.")) {
+    return;
+  }
+
   chunks = [];
   recordedBlob = null;
   timer.textContent = "00:00";
