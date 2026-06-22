@@ -85,6 +85,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "size_bytes": row["size_bytes"],
         "created_at": row["created_at"],
         "video_url": f"/videos/{filename}",
+        "download_url": f"/videos/{filename}?download=1",
     }
 
 
@@ -331,7 +332,14 @@ def delete_recording(recording_id: int):
 
 @app.get("/videos/<path:filename>")
 def serve_video(filename: str):
-    return send_from_directory(VIDEO_DIR, filename, conditional=True)
+    as_attachment = request.args.get("download") == "1"
+    return send_from_directory(
+        VIDEO_DIR,
+        filename,
+        as_attachment=as_attachment,
+        download_name=Path(filename).name if as_attachment else None,
+        conditional=True,
+    )
 
 
 @app.get("/health")

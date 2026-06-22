@@ -155,6 +155,7 @@ The search panel shows a log of scanned shipping labels and their saved recordin
 - Video format.
 - File size.
 - Video preview.
+- Download action.
 - Delete action.
 
 The log supports:

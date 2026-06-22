@@ -415,6 +415,7 @@ async function deleteRecording(item, card) {
 function renderRecording(item) {
   const node = resultTemplate.content.cloneNode(true);
   const card = node.querySelector(".result-card");
+  const downloadLink = node.querySelector(".download-recording");
   const deleteButton = node.querySelector(".delete-recording");
   const date = new Date(item.created_at);
 
@@ -426,6 +427,8 @@ function renderRecording(item) {
   node.querySelector(".result-format").textContent = formatVideoFormat(item);
   node.querySelector(".result-size").textContent = formatFileSize(item.size_bytes);
   node.querySelector(".result-video").src = item.video_url;
+  downloadLink.href = item.download_url || `${item.video_url}?download=1`;
+  downloadLink.download = item.filename.split("/").pop();
   deleteButton.addEventListener("click", () => deleteRecording(item, card));
 
   results.appendChild(node);
