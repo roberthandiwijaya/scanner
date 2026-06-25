@@ -8,6 +8,7 @@ The app is designed for old Windows PCs and barcode scanner workflows:
 - Choose `Packing` or `Return unboxing`.
 - Start recording from the webcam.
 - Stop, retry if needed, then save.
+- Optionally record microphone audio with the webcam video.
 - Or upload an existing packing / return unboxing video without using the webcam.
 - Search saved videos by invoice or shipping receipt and date range.
 - Review scanned shipping label log details.
@@ -50,18 +51,20 @@ Webcam access works on `localhost` in modern browsers.
 
 The camera has a short countdown before recording starts, so the operator has a moment to position the package or label.
 
+Turn on `Record audio` before starting if microphone audio is needed. The live webcam preview stays muted to avoid echo, but the saved recording will include audio when the browser has microphone permission.
+
 Use `Stop webcam preview` to turn off the live camera preview after recording or when the workstation is idle. The next `Start recording` action will request and show the camera again.
 
 HTTPS is also available through Caddy:
 
 ```text
-https://192.168.100.13:8443
+https://192.168.100.19:8443
 ```
 
 If the host computer's LAN IP changes, set `LAN_HOST` to the new IP before starting Docker Compose:
 
 ```powershell
-$env:LAN_HOST="192.168.100.13"
+$env:LAN_HOST="192.168.100.19"
 docker compose up --build
 ```
 
@@ -94,7 +97,7 @@ https://<host-ip>:8443
 For this host computer right now, that is:
 
 ```text
-https://192.168.100.13:8443
+https://192.168.100.19:8443
 ```
 
 If the page does not load, allow inbound TCP traffic on port `8443` in Windows Firewall on the host computer:
@@ -141,9 +144,11 @@ Supported file extensions include `.webm`, `.mp4`, `.mov`, `.m4v`, `.avi`, and `
 
 ## Recording Format
 
-Webcam recordings are saved as `.webm`. The browser recorder tries WebM with VP9 first, then VP8, then generic WebM.
+Webcam recordings are saved as `.webm`. The browser recorder tries WebM with VP9 first, then VP8, then generic WebM. When `Record audio` is enabled, it also asks the browser for Opus audio in the WebM file.
 
 WebM is a good fit for this local recorder because it is well supported by browser recording APIs and can keep file sizes smaller at similar quality. MP4 is still more widely compatible for playback outside browsers, so uploaded existing videos may still use common formats like `.mp4`, `.mov`, `.avi`, and `.mkv`.
+
+The Docker image includes `ffmpeg` so saved `.webm` recordings can be remuxed after upload. This repairs duration and seek metadata that some browsers omit, which helps the playback progress bar match the real video position.
 
 ## Scanned Label Log
 

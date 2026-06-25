@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -97,6 +99,45 @@ def recording_path(filename: str) -> Path:
         raise ValueError("Invalid recording path.") from exc
     else:
         return path
+
+
+def repair_webm_metadata(path: Path) -> bool:
+    if path.suffix.lower() != ".webm":
+        return False
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        app.logger.info("Skipping WebM metadata repair because ffmpeg is not installed.")
+        return False
+
+    fixed_path = path.with_name(f"{path.stem}.fixed{path.suffix}")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-avoid_negative_ts",
+        "make_zero",
+        str(fixed_path),
+    ]
+
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=120)
+        fixed_path.replace(path)
+    except (OSError, subprocess.SubprocessError) as error:
+        if fixed_path.exists():
+            fixed_path.unlink(missing_ok=True)
+        app.logger.warning("Could not repair WebM metadata for %s: %s", path.name, error)
+        return False
+
+    return True
 
 
 def parse_positive_int(value: Optional[str], default: int, maximum: Optional[int] = None) -> int:
@@ -281,6 +322,7 @@ def create_recording():
     relative_name = f"{month_dir.name}/{filename}"
     target_path = month_dir / filename
     video.save(target_path)
+    repair_webm_metadata(target_path)
     size_bytes = target_path.stat().st_size
     created_at = datetime.now(timezone.utc).isoformat()
 

@@ -1,6 +1,7 @@
 const invoiceInput = document.querySelector("#invoice");
 const duplicateWarning = document.querySelector("#duplicateWarning");
 const modeInputs = [...document.querySelectorAll("input[name='mode']")];
+const audioEnabledInput = document.querySelector("#audioEnabled");
 const preview = document.querySelector("#preview");
 const countdown = document.querySelector("#countdown");
 const startBtn = document.querySelector("#startBtn");
@@ -49,6 +50,10 @@ function selectedMode() {
   return modeInputs.find((input) => input.checked).value;
 }
 
+function audioEnabled() {
+  return audioEnabledInput.checked;
+}
+
 function setMessage(text, isError = false) {
   message.textContent = text;
   message.classList.toggle("error", isError);
@@ -64,6 +69,7 @@ function setRecordingUi(isRecording) {
   modeInputs.forEach((input) => {
     input.disabled = isRecording;
   });
+  audioEnabledInput.disabled = isRecording;
 }
 
 function setCountdownUi(isCountingDown) {
@@ -76,6 +82,7 @@ function setCountdownUi(isCountingDown) {
   modeInputs.forEach((input) => {
     input.disabled = isCountingDown;
   });
+  audioEnabledInput.disabled = isCountingDown;
 }
 
 function formatTimer(seconds) {
@@ -124,7 +131,12 @@ async function ensureCamera() {
   }
 
   stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
+    audio: audioEnabled()
+      ? {
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      : false,
     video: {
       width: { ideal: 1280 },
       height: { ideal: 720 },
@@ -138,11 +150,18 @@ async function ensureCamera() {
 }
 
 function getMimeType() {
-  const options = [
-    "video/webm;codecs=vp9",
-    "video/webm;codecs=vp8",
-    "video/webm"
-  ];
+  const options = audioEnabled()
+    ? [
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm;codecs=opus",
+        "video/webm"
+      ]
+    : [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm"
+      ];
 
   return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
@@ -228,6 +247,17 @@ function stopWebcamPreview() {
   cameraOffBtn.disabled = true;
   cameraStatus.textContent = "Camera stopped";
   setMessage("Webcam preview stopped. Start recording will turn it back on.");
+}
+
+function resetCameraForAudioChange() {
+  localStorage.setItem("scanner-record-audio", audioEnabled() ? "1" : "0");
+
+  if (!stream || (recorder && recorder.state === "recording")) {
+    return;
+  }
+
+  stopWebcamPreview();
+  setMessage("Audio setting updated. Start recording will turn the webcam on again.");
 }
 
 function retryRecording() {
@@ -578,6 +608,10 @@ function initTheme() {
   applyTheme(savedTheme === "dark" ? "dark" : "light");
 }
 
+function initAudioPreference() {
+  audioEnabledInput.checked = localStorage.getItem("scanner-record-audio") === "1";
+}
+
 startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
 retryBtn.addEventListener("click", retryRecording);
@@ -617,6 +651,7 @@ nextPageBtn.addEventListener("click", () => {
   }
 });
 themeToggle.addEventListener("click", toggleTheme);
+audioEnabledInput.addEventListener("change", resetCameraForAudioChange);
 invoiceInput.addEventListener("input", queueDuplicateCheck);
 invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
 
@@ -628,5 +663,6 @@ invoiceInput.addEventListener("keydown", (event) => {
 });
 
 initTheme();
+initAudioPreference();
 setRecordingUi(false);
 Promise.all([loadResults(), loadSummary()]);
