@@ -2,6 +2,7 @@ const invoiceInput = document.querySelector("#invoice");
 const duplicateWarning = document.querySelector("#duplicateWarning");
 const modeInputs = [...document.querySelectorAll("input[name='mode']")];
 const audioEnabledInput = document.querySelector("#audioEnabled");
+const autoStartEnabledInput = document.querySelector("#autoStartEnabled");
 const preview = document.querySelector("#preview");
 const countdown = document.querySelector("#countdown");
 const startBtn = document.querySelector("#startBtn");
@@ -39,6 +40,7 @@ let stream = null;
 let recorder = null;
 let chunks = [];
 let recordedBlob = null;
+let recordedDurationMs = 0;
 let startedAt = 0;
 let timerHandle = null;
 let searchDebounce = null;
@@ -52,6 +54,10 @@ function selectedMode() {
 
 function audioEnabled() {
   return audioEnabledInput.checked;
+}
+
+function autoStartEnabled() {
+  return autoStartEnabledInput.checked;
 }
 
 function setMessage(text, isError = false) {
@@ -70,6 +76,7 @@ function setRecordingUi(isRecording) {
     input.disabled = isRecording;
   });
   audioEnabledInput.disabled = isRecording;
+  autoStartEnabledInput.disabled = isRecording;
 }
 
 function setCountdownUi(isCountingDown) {
@@ -83,6 +90,7 @@ function setCountdownUi(isCountingDown) {
     input.disabled = isCountingDown;
   });
   audioEnabledInput.disabled = isCountingDown;
+  autoStartEnabledInput.disabled = isCountingDown;
 }
 
 function formatTimer(seconds) {
@@ -186,6 +194,7 @@ async function startRecording() {
     const camera = await ensureCamera();
     chunks = [];
     recordedBlob = null;
+    recordedDurationMs = 0;
     timer.textContent = "00:00";
     setMessage("Get ready...");
 
@@ -201,13 +210,14 @@ async function startRecording() {
 
     recorder.addEventListener("stop", () => {
       recordedBlob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+      recordedDurationMs = Date.now() - startedAt;
       stopTimer();
       setRecordingUi(false);
       setMessage("Recording stopped. Save it, or retry if you want to record again.");
       cameraStatus.textContent = "Recording ready to save";
     });
 
-    recorder.start(1000);
+    recorder.start();
     startTimer();
     setRecordingUi(true);
     setMessage("Recording...");
@@ -265,21 +275,29 @@ function retryRecording() {
     return;
   }
 
+  resetRecordingDraft();
+}
+
+function resetRecordingDraft() {
   chunks = [];
   recordedBlob = null;
+  recordedDurationMs = 0;
   timer.textContent = "00:00";
   setRecordingUi(false);
   setMessage("Ready to record again.");
   cameraStatus.textContent = stream ? "Camera ready" : "Camera idle";
 }
 
-async function uploadVideoBlob(videoBlob, fileName = "recording.webm") {
+async function uploadVideoBlob(videoBlob, fileName = "recording.webm", expectedDurationMs = null) {
   const invoice = invoiceInput.value.trim();
 
   const form = new FormData();
   form.append("invoice", invoice);
   form.append("mode", selectedMode());
   form.append("video", videoBlob, fileName);
+  if (expectedDurationMs !== null) {
+    form.append("duration_ms", String(Math.max(Math.round(expectedDurationMs), 0)));
+  }
 
   const response = await fetch("/api/recordings", {
     method: "POST",
@@ -297,6 +315,11 @@ async function uploadVideoBlob(videoBlob, fileName = "recording.webm") {
   return payload;
 }
 
+async function hasWebmHeader(videoBlob) {
+  const header = new Uint8Array(await videoBlob.slice(0, 4).arrayBuffer());
+  return header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3;
+}
+
 async function saveRecording() {
   const invoice = invoiceInput.value.trim();
 
@@ -309,9 +332,13 @@ async function saveRecording() {
   setMessage("Saving recording...");
 
   try {
-    await uploadVideoBlob(recordedBlob, `${invoice}.webm`);
+    if (!(await hasWebmHeader(recordedBlob))) {
+      throw new Error("Recording file is incomplete. Please retry the recording.");
+    }
+
+    await uploadVideoBlob(recordedBlob, `${invoice}.webm`, recordedDurationMs);
     setMessage("Saved locally.");
-    retryRecording();
+    resetRecordingDraft();
     invoiceInput.value = "";
     duplicateWarning.textContent = "";
     duplicateWarning.classList.remove("active");
@@ -612,6 +639,10 @@ function initAudioPreference() {
   audioEnabledInput.checked = localStorage.getItem("scanner-record-audio") === "1";
 }
 
+function initAutoStartPreference() {
+  autoStartEnabledInput.checked = localStorage.getItem("scanner-start-on-enter") === "1";
+}
+
 startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
 retryBtn.addEventListener("click", retryRecording);
@@ -652,11 +683,14 @@ nextPageBtn.addEventListener("click", () => {
 });
 themeToggle.addEventListener("click", toggleTheme);
 audioEnabledInput.addEventListener("change", resetCameraForAudioChange);
+autoStartEnabledInput.addEventListener("change", () => {
+  localStorage.setItem("scanner-start-on-enter", autoStartEnabled() ? "1" : "0");
+});
 invoiceInput.addEventListener("input", queueDuplicateCheck);
 invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
 
 invoiceInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
+  if (event.key === "Enter" && autoStartEnabled()) {
     event.preventDefault();
     startRecording();
   }
@@ -664,5 +698,6 @@ invoiceInput.addEventListener("keydown", (event) => {
 
 initTheme();
 initAudioPreference();
+initAutoStartPreference();
 setRecordingUi(false);
 Promise.all([loadResults(), loadSummary()]);

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Convert WebM to MP4</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">FFmpeg MP4 converter</p>
+        <h1>Convert WebM to MP4.</h1>
+      </div>
+      <div class="top-actions">
+        <nav class="menu-bar" aria-label="Main navigation">
+          <a href="/">Dashboard</a>
+          <a class="active" href="/convert">Convert</a>
+        </nav>
+        <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
+        <div class="status-pill">FFmpeg</div>
+      </div>
+    </header>
+
+    <main class="layout convert-layout">
+      <section class="panel converter-panel">
+        <div class="search-header">
+          <div>
+            <p class="eyebrow">Source</p>
+            <h2>Recording</h2>
+          </div>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+
+        <div class="field-row">
+          <label for="recordingSearch">Search invoice</label>
+          <input id="recordingSearch" autocomplete="off" placeholder="Search saved WebM">
+        </div>
+
+        <div class="field-row">
+          <label for="recordingSelect">WebM recording</label>
+          <select id="recordingSelect"></select>
+        </div>
+
+        <div class="settings-grid">
+          <div class="field-row">
+            <label for="resolutionSelect">Resolution</label>
+            <select id="resolutionSelect">
+              {% for key, option in resolutions.items() %}
+                <option value="{{ key }}">{{ option.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="field-row">
+            <label for="qualitySelect">Setting</label>
+            <select id="qualitySelect">
+              {% for key, option in qualities.items() %}
+                <option value="{{ key }}" {% if key == "standard" %}selected{% endif %}>
+                  {{ option.label }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <dl class="conversion-details">
+          <div>
+            <dt>Duration</dt>
+            <dd id="durationValue">-</dd>
+          </div>
+          <div>
+            <dt>Source</dt>
+            <dd id="sourceValue">-</dd>
+          </div>
+          <div>
+            <dt>Estimate</dt>
+            <dd id="estimateValue">-</dd>
+          </div>
+          <div>
+            <dt>Engine</dt>
+            <dd id="engineValue">FFmpeg</dd>
+          </div>
+        </dl>
+
+        <div class="actions">
+          <button id="convertBtn" class="primary" type="button">Convert to MP4</button>
+        </div>
+
+        <div id="conversionProgress" class="progress-shell" hidden>
+          <div class="progress-topline">
+            <span>Converting</span>
+            <strong id="progressPercent">0%</strong>
+          </div>
+          <div class="progress-track" aria-hidden="true">
+            <i id="progressBar"></i>
+          </div>
+        </div>
+
+        <p class="message" id="convertMessage" role="status"></p>
+      </section>
+
+      <section class="panel converted-panel">
+        <div class="search-header">
+          <div>
+            <p class="eyebrow">Output</p>
+            <h2>MP4 file</h2>
+          </div>
+        </div>
+
+        <div id="convertedEmpty" class="empty-state">
+          <strong>No MP4 converted yet.</strong>
+          <span>Select a recording and convert it.</span>
+        </div>
+
+        <div id="convertedResult" class="converted-result" hidden>
+          <dl class="conversion-details">
+            <div>
+              <dt>Actual size</dt>
+              <dd id="actualSizeValue">-</dd>
+            </div>
+            <div>
+              <dt>Estimated size</dt>
+              <dd id="actualEstimateValue">-</dd>
+            </div>
+          </dl>
+          <video id="convertedVideo" class="result-video" controls preload="metadata"></video>
+          <div class="actions">
+            <a id="downloadConverted" class="download-recording" href="#" download>Download MP4</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/convert.js"></script>
+  </body>
+</html>

@@ -12,6 +12,7 @@ The app is designed for old Windows PCs and barcode scanner workflows:
 - Or upload an existing packing / return unboxing video without using the webcam.
 - Search saved videos by invoice or shipping receipt and date range.
 - Review scanned shipping label log details.
+- Convert saved `.webm` recordings to `.mp4`.
 - Delete old recordings from the UI.
 - See dashboard totals, daily scan counts, and storage usage.
 - Get duplicate label warnings before recording.
@@ -53,20 +54,17 @@ The camera has a short countdown before recording starts, so the operator has a 
 
 Turn on `Record audio` before starting if microphone audio is needed. The live webcam preview stays muted to avoid echo, but the saved recording will include audio when the browser has microphone permission.
 
+Turn on `Start on Enter` only when you want a barcode scan with an Enter suffix to start recording automatically.
+
 Use `Stop webcam preview` to turn off the live camera preview after recording or when the workstation is idle. The next `Start recording` action will request and show the camera again.
 
 HTTPS is also available through Caddy:
 
 ```text
-https://192.168.100.19:8443
+https://<host-ip>:8443
 ```
 
-If the host computer's LAN IP changes, set `LAN_HOST` to the new IP before starting Docker Compose:
-
-```powershell
-$env:LAN_HOST="192.168.100.19"
-docker compose up --build
-```
+Caddy accepts private LAN IP addresses dynamically. If the host computer's LAN IP changes, use the new IP address with the same `:8443` port; no code or rebuild is needed.
 
 ## Access From Another Computer On The LAN
 
@@ -94,11 +92,7 @@ From another computer on the same network, open:
 https://<host-ip>:8443
 ```
 
-For this host computer right now, that is:
-
-```text
-https://192.168.100.19:8443
-```
+If the host computer's IP changes later, use the new `IPv4 Address` from `ipconfig`; no code or `LAN_HOST` setting needs to be changed. If Docker Desktop does not immediately accept the new address, restart the stack with `docker compose up -d`.
 
 If the page does not load, allow inbound TCP traffic on port `8443` in Windows Firewall on the host computer:
 
@@ -120,7 +114,7 @@ For example, copy `root.crt` to the client computer and run:
 certutil -user -addstore Root root.crt
 ```
 
-Without trusting that certificate, the browser may show a warning and may still block webcam access.
+Without trusting that certificate, the browser may show a warning and may still block webcam access. After the root certificate is trusted, Caddy can create certificates for new private LAN IP addresses automatically.
 
 ## Barcode Scanner Notes
 
@@ -128,7 +122,8 @@ The Zebra LS2208 usually works as a USB HID keyboard. Put the cursor in the invo
 
 Recommended scanner setting:
 
-- Add an `Enter` suffix after scan if you want scanning to immediately start recording.
+- Keep `Start on Enter` off if scanning should only fill the invoice field.
+- Turn on `Start on Enter` if the scanner sends an `Enter` suffix and you want scanning to immediately start recording.
 - Do not add random prefixes/suffixes unless your invoice format needs them.
 
 ## Upload Existing Videos
@@ -149,6 +144,28 @@ Webcam recordings are saved as `.webm`. The browser recorder tries WebM with VP9
 WebM is a good fit for this local recorder because it is well supported by browser recording APIs and can keep file sizes smaller at similar quality. MP4 is still more widely compatible for playback outside browsers, so uploaded existing videos may still use common formats like `.mp4`, `.mov`, `.avi`, and `.mkv`.
 
 The Docker image includes `ffmpeg` so saved `.webm` recordings can be remuxed after upload. This repairs duration and seek metadata that some browsers omit, which helps the playback progress bar match the real video position.
+
+The app validates saved videos before adding them to the log. Webcam recordings are saved through a temporary file first, checked for a valid `.webm` header, readable video stream, and matching duration, then moved into the final video folder only after those checks pass. If the browser produces an incomplete file, the app rejects it and asks the operator to retry instead of saving a broken video.
+
+## Convert WebM To MP4
+
+Open `Convert` from the top menu to convert saved `.webm` recordings to `.mp4`.
+
+The converter uses `ffmpeg` inside the Docker container. It supports:
+
+- Source, 1080p, 720p, 480p, and 360p output resolution.
+- Small file, standard, and high quality settings.
+- Estimated MP4 file size before conversion.
+- Percentage progress while FFmpeg is converting.
+- MP4 preview and download after conversion.
+
+Converted files are stored in:
+
+```text
+data/converted/YYYY-MM/
+```
+
+The estimate is based on the selected video/audio bitrate and source duration. The final file size can be slightly different because video content compresses differently.
 
 ## Scanned Label Log
 
@@ -200,7 +217,7 @@ This repo also includes:
 scripts/start-scanner.ps1
 ```
 
-The script waits for Docker Desktop, detects the host computer's LAN IP, sets `LAN_HOST`, and runs:
+The script waits for Docker Desktop and runs:
 
 ```powershell
 docker compose up -d

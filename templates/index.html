@@ -13,6 +13,10 @@
         <h1>Scan, record, save, search.</h1>
       </div>
       <div class="top-actions">
+        <nav class="menu-bar" aria-label="Main navigation">
+          <a class="active" href="/">Dashboard</a>
+          <a href="/convert">Convert</a>
+        </nav>
         <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
         <div class="status-pill" id="cameraStatus">Camera idle</div>
       </div>
@@ -60,6 +64,10 @@
           <label>
             <input id="audioEnabled" type="checkbox">
             Record audio
+          </label>
+          <label>
+            <input id="autoStartEnabled" type="checkbox">
+            Start on Enter
           </label>
         </div>
 

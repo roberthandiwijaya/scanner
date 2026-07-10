@@ -1,8 +1,12 @@
 {
-	default_sni {$LAN_HOST}
+	on_demand_tls {
+		ask http://recorder:8000/api/caddy/allow-certificate
+	}
 }
 
-https://{$LAN_HOST}:8443 {
-	tls internal
+https://:8443 {
+	tls internal {
+		on_demand
+	}
 	reverse_proxy recorder:8000
 }

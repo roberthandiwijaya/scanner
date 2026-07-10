@@ -36,19 +36,6 @@ if (-not $dockerReady) {
     exit 1
 }
 
-$lanAddress = Get-NetIPAddress -AddressFamily IPv4 |
-    Where-Object {
-        $_.IPAddress -notlike "127.*" -and
-        $_.InterfaceAlias -notlike "vEthernet*" -and
-        $_.PrefixOrigin -ne "WellKnown"
-    } |
-    Select-Object -First 1 -ExpandProperty IPAddress
-
-if ($lanAddress) {
-    $env:LAN_HOST = $lanAddress
-    Write-StartupLog "Using LAN_HOST=$lanAddress."
-}
-
 cmd /c "docker compose up -d >NUL 2>NUL"
 if ($LASTEXITCODE -ne 0) {
     Write-StartupLog "docker compose up -d failed with exit code $LASTEXITCODE."
