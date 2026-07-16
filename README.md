@@ -120,6 +120,20 @@ Without trusting that certificate, the browser may show a warning and may still 
 
 The Zebra LS2208 usually works as a USB HID keyboard. Put the cursor in the invoice field and scan.
 
+When the scanner sends Enter after a shipping receipt, the dashboard looks up the shipment and opens an order-details popup. The popup shows the order number, package number, carrier, product variations, SKUs, quantities, and product images. The operator must confirm whether the details match the products collected from the shelf. When `Start on Enter` is enabled, recording waits for a matching confirmation; choosing `Does not match` prevents the automatic recording from starting.
+
+The lookup is sent through the Flask server so the API key is never exposed to browser JavaScript. Create `.env` from `.env.example` and set:
+
+```text
+ORDER_LOOKUP_API_KEY=your-api-key
+```
+
+Restart the recorder after changing this setting:
+
+```powershell
+docker compose up -d --build recorder
+```
+
 Recommended scanner setting:
 
 - Keep `Start on Enter` off if scanning should only fill the invoice field.
@@ -166,6 +180,8 @@ data/converted/YYYY-MM/
 ```
 
 The estimate is based on the selected video/audio bitrate and source duration. The final file size can be slightly different because video content compresses differently.
+
+Only one MP4 conversion runs at a time. Extra conversion requests wait in a queue, and FFmpeg is limited to 2 threads to reduce lag while the app is also recording or serving users.
 
 ## Scanned Label Log
 

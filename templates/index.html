@@ -145,6 +145,88 @@
       </section>
     </main>
 
+    <dialog id="orderDialog" class="order-dialog" aria-labelledby="orderDialogTitle">
+      <div class="order-dialog-shell">
+        <header class="order-dialog-header">
+          <div>
+            <p class="eyebrow">Shipping information</p>
+            <h2 id="orderDialogTitle">Order details</h2>
+          </div>
+          <button
+            id="orderDialogClose"
+            class="icon-button"
+            type="button"
+            aria-label="Close order details"
+            title="Close order details"
+          >&times;</button>
+        </header>
+
+        <div id="orderLookupStatus" class="order-lookup-status" role="status"></div>
+
+        <div id="orderDetails" class="order-details" hidden>
+          <dl class="order-summary">
+            <div>
+              <dt>Tracking number</dt>
+              <dd id="orderTrackingNumber"></dd>
+            </div>
+            <div>
+              <dt>Order number</dt>
+              <dd id="orderNumber"></dd>
+            </div>
+            <div>
+              <dt>Package number</dt>
+              <dd id="orderPackageNumber"></dd>
+            </div>
+            <div>
+              <dt>Shipping carrier</dt>
+              <dd id="orderShippingCarrier"></dd>
+            </div>
+          </dl>
+
+          <div class="order-products-heading">
+            <h3>Products</h3>
+            <span id="orderItemCount"></span>
+          </div>
+          <div id="orderItems" class="order-items"></div>
+
+          <section class="order-match-confirmation" aria-labelledby="orderMatchQuestion">
+            <div>
+              <h3 id="orderMatchQuestion">Do the product details match?</h3>
+              <p>Compare these details with the products collected from the shelf.</p>
+            </div>
+            <div class="order-match-actions">
+              <button id="orderMismatchBtn" class="danger" type="button">Does not match</button>
+              <button id="orderMatchBtn" class="primary" type="button">Product details match</button>
+            </div>
+            <p id="orderMatchStatus" class="order-match-status" role="status"></p>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="orderItemTemplate">
+      <article class="order-item">
+        <img class="order-item-image" alt="" loading="lazy" referrerpolicy="no-referrer">
+        <div class="order-item-content">
+          <h4 class="order-item-name"></h4>
+          <dl class="order-item-details">
+            <div>
+              <dt>Variation</dt>
+              <dd class="order-item-model"></dd>
+            </div>
+            <div>
+              <dt>SKU</dt>
+              <dd class="order-item-sku"></dd>
+            </div>
+            <div>
+              <dt>Quantity</dt>
+              <dd class="order-item-quantity"></dd>
+            </div>
+          </dl>
+        </div>
+      </article>
+    </template>
+
     <template id="resultTemplate">
       <article class="result-card">
         <div class="result-topline">

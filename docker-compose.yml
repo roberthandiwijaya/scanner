@@ -6,6 +6,8 @@ services:
     environment:
       DATA_DIR: /app/data
       MAX_UPLOAD_MB: 512
+      ORDER_LOOKUP_API_URL: ${ORDER_LOOKUP_API_URL:-https://shopee.techly.id/api/orders/by-tracking-number}
+      ORDER_LOOKUP_API_KEY: ${ORDER_LOOKUP_API_KEY:-}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

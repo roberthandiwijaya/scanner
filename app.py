@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import sqlite3
@@ -12,6 +13,9 @@ from ipaddress import ip_address
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
@@ -23,6 +27,12 @@ CONVERTED_DIR = DATA_DIR / "converted"
 DB_PATH = DATA_DIR / "recordings.sqlite3"
 
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "512"))
+ORDER_LOOKUP_API_URL = os.environ.get(
+    "ORDER_LOOKUP_API_URL",
+    "https://shopee.techly.id/api/orders/by-tracking-number",
+).strip()
+ORDER_LOOKUP_API_KEY = os.environ.get("ORDER_LOOKUP_API_KEY", "").strip()
+ORDER_LOOKUP_TIMEOUT_SECONDS = 10
 ALLOWED_MODES = {"packing", "return"}
 ALLOWED_VIDEO_EXTENSIONS = {".webm", ".mp4", ".mov", ".m4v", ".avi", ".mkv"}
 DEFAULT_PAGE_SIZE = 10
@@ -41,6 +51,9 @@ CONVERT_QUALITIES = {
 }
 CONVERSION_JOBS: dict[str, dict[str, Any]] = {}
 CONVERSION_JOBS_LOCK = threading.Lock()
+CONVERSION_QUEUE: queue.Queue[tuple[str, int, str, str]] = queue.Queue()
+CONVERSION_WORKER_LOCK = threading.Lock()
+CONVERSION_WORKER_STARTED = False
 
 
 app = Flask(__name__)
@@ -81,6 +94,59 @@ def sanitize_invoice(value: str) -> str:
     value = re.sub(r"\s+", "-", value)
     value = re.sub(r"[^A-Za-z0-9._-]", "", value)
     return value[:80]
+
+
+def validate_tracking_number(value: str) -> str | None:
+    value = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", value):
+        return None
+    return value
+
+
+def safe_image_url(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+
+    parsed = urlparse(value.strip())
+    if parsed.scheme != "https" or not parsed.netloc:
+        return ""
+    return value.strip()
+
+
+def normalize_order_payload(payload: Any, tracking_number: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Order service returned an invalid response.")
+
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    items = []
+    for item in raw_items[:100]:
+        if not isinstance(item, dict):
+            continue
+
+        quantity = item.get("model_quantity_purchased", 0)
+        if not isinstance(quantity, (int, float)) or isinstance(quantity, bool):
+            quantity = 0
+
+        items.append(
+            {
+                "item_name": str(item.get("item_name") or ""),
+                "model_name": str(item.get("model_name") or ""),
+                "model_quantity_purchased": quantity,
+                "model_sku": str(item.get("model_sku") or ""),
+                "image_url": safe_image_url(item.get("image_url")),
+            }
+        )
+
+    return {
+        "tracking_number": tracking_number,
+        "order_sn": str(payload.get("order_sn") or ""),
+        "package_number": str(payload.get("package_number") or ""),
+        "shipping_carrier": str(payload.get("shipping_carrier") or ""),
+        "items": items,
+    }
 
 
 def safe_extension(filename: str) -> str:
@@ -341,6 +407,8 @@ def ffmpeg_convert_command(
         "libx264",
         "-preset",
         quality["preset"],
+        "-threads",
+        "2",
         "-b:v",
         f"{quality['video_bitrate_kbps']}k",
         "-maxrate",
@@ -365,6 +433,27 @@ def ffmpeg_convert_command(
 
     command.append(str(temp_path))
     return command
+
+
+def conversion_worker_loop() -> None:
+    while True:
+        job_id, recording_id, resolution_key, quality_key = CONVERSION_QUEUE.get()
+        try:
+            run_conversion_job(job_id, recording_id, resolution_key, quality_key)
+        finally:
+            CONVERSION_QUEUE.task_done()
+
+
+def ensure_conversion_worker() -> None:
+    global CONVERSION_WORKER_STARTED
+
+    with CONVERSION_WORKER_LOCK:
+        if CONVERSION_WORKER_STARTED:
+            return
+
+        thread = threading.Thread(target=conversion_worker_loop, daemon=True)
+        thread.start()
+        CONVERSION_WORKER_STARTED = True
 
 
 def run_conversion_job(
@@ -715,16 +804,12 @@ def convert_recording():
             "job_id": job_id,
             "status": "queued",
             "progress": 0,
-            "message": "Queued for conversion.",
+            "message": "Queued for conversion. Waiting for the current conversion to finish.",
             "result": None,
         }
 
-    thread = threading.Thread(
-        target=run_conversion_job,
-        args=(job_id, recording_id, resolution_key, quality_key),
-        daemon=True,
-    )
-    thread.start()
+    ensure_conversion_worker()
+    CONVERSION_QUEUE.put((job_id, recording_id, resolution_key, quality_key))
 
     return jsonify(get_conversion_job(job_id)), 202
 
@@ -759,6 +844,48 @@ def duplicate_recording():
             "latest": row_to_dict(latest) if latest else None,
         }
     )
+
+
+@app.get("/api/orders/by-tracking-number")
+def order_by_tracking_number():
+    tracking_number = validate_tracking_number(request.args.get("tracking_number", ""))
+
+    if tracking_number is None:
+        return jsonify({"error": "Enter a valid shipping receipt or tracking number."}), 400
+
+    if not ORDER_LOOKUP_API_KEY:
+        return jsonify({"error": "Shipping order lookup is not configured."}), 503
+
+    query = urlencode({"tracking_number": tracking_number})
+    upstream_request = UrlRequest(
+        f"{ORDER_LOOKUP_API_URL}?{query}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "scanner-order-lookup/1.0",
+            "X-API-Key": ORDER_LOOKUP_API_KEY,
+        },
+    )
+
+    try:
+        with urlopen(upstream_request, timeout=ORDER_LOOKUP_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
+        return jsonify(normalize_order_payload(payload, tracking_number))
+    except HTTPError as error:
+        if error.code == 404:
+            return jsonify({"error": "Tracking number not found."}), 404
+        if error.code in {401, 403}:
+            app.logger.warning("Shipping order API rejected its configured credentials.")
+            return jsonify({"error": "Shipping order lookup authentication failed."}), 502
+        if error.code == 429:
+            return jsonify({"error": "Shipping order lookup is busy. Please try again shortly."}), 503
+        app.logger.warning("Shipping order API returned HTTP %s.", error.code)
+        return jsonify({"error": "Shipping order lookup is temporarily unavailable."}), 502
+    except (TimeoutError, URLError) as error:
+        app.logger.warning("Shipping order API could not be reached: %s", error)
+        return jsonify({"error": "Could not reach the shipping order service."}), 502
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
+        app.logger.warning("Shipping order API returned invalid data: %s", error)
+        return jsonify({"error": "Shipping order service returned invalid data."}), 502
 
 
 @app.get("/api/summary")

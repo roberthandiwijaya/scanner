@@ -32,6 +32,20 @@ const totalRecordings = document.querySelector("#totalRecordings");
 const totalStorage = document.querySelector("#totalStorage");
 const todayScans = document.querySelector("#todayScans");
 const dailyCounts = document.querySelector("#dailyCounts");
+const orderDialog = document.querySelector("#orderDialog");
+const orderDialogClose = document.querySelector("#orderDialogClose");
+const orderLookupStatus = document.querySelector("#orderLookupStatus");
+const orderDetails = document.querySelector("#orderDetails");
+const orderTrackingNumber = document.querySelector("#orderTrackingNumber");
+const orderNumber = document.querySelector("#orderNumber");
+const orderPackageNumber = document.querySelector("#orderPackageNumber");
+const orderShippingCarrier = document.querySelector("#orderShippingCarrier");
+const orderItemCount = document.querySelector("#orderItemCount");
+const orderItems = document.querySelector("#orderItems");
+const orderItemTemplate = document.querySelector("#orderItemTemplate");
+const orderMatchBtn = document.querySelector("#orderMatchBtn");
+const orderMismatchBtn = document.querySelector("#orderMismatchBtn");
+const orderMatchStatus = document.querySelector("#orderMatchStatus");
 
 const PER_PAGE = 10;
 const COUNTDOWN_SECONDS = 3;
@@ -47,6 +61,8 @@ let searchDebounce = null;
 let duplicateDebounce = null;
 let currentPage = 1;
 let currentTotalPages = 1;
+let orderLookupController = null;
+let startAfterOrderMatch = false;
 
 function selectedMode() {
   return modeInputs.find((input) => input.checked).value;
@@ -114,6 +130,118 @@ function stopTimer() {
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function displayValue(value) {
+  return value === null || value === undefined || value === "" ? "Not available" : String(value);
+}
+
+function openOrderDialog() {
+  if (!orderDialog.open) {
+    orderDialog.showModal();
+  }
+}
+
+function setOrderLookupStatus(text, isError = false) {
+  orderLookupStatus.textContent = text;
+  orderLookupStatus.classList.toggle("error", isError);
+  orderLookupStatus.hidden = !text;
+}
+
+function renderOrderItem(item) {
+  const node = orderItemTemplate.content.cloneNode(true);
+  const image = node.querySelector(".order-item-image");
+
+  node.querySelector(".order-item-name").textContent = displayValue(item.item_name);
+  node.querySelector(".order-item-model").textContent = displayValue(item.model_name);
+  node.querySelector(".order-item-sku").textContent = displayValue(item.model_sku);
+  node.querySelector(".order-item-quantity").textContent = displayValue(item.model_quantity_purchased);
+
+  if (item.image_url) {
+    image.src = item.image_url;
+    image.alt = item.item_name ? `Product image for ${item.item_name}` : "Product image";
+    image.addEventListener("error", () => {
+      image.hidden = true;
+    });
+  } else {
+    image.hidden = true;
+  }
+
+  orderItems.appendChild(node);
+}
+
+function renderOrderDetails(order) {
+  orderTrackingNumber.textContent = displayValue(order.tracking_number);
+  orderNumber.textContent = displayValue(order.order_sn);
+  orderPackageNumber.textContent = displayValue(order.package_number);
+  orderShippingCarrier.textContent = displayValue(order.shipping_carrier);
+  orderItems.textContent = "";
+  orderMatchStatus.textContent = "";
+  orderMatchStatus.classList.remove("error", "success");
+
+  const items = Array.isArray(order.items) ? order.items : [];
+  orderItemCount.textContent = `${items.length} ${items.length === 1 ? "product" : "products"}`;
+
+  if (items.length) {
+    items.forEach(renderOrderItem);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "order-items-empty";
+    empty.textContent = "No product details were returned for this shipment.";
+    orderItems.appendChild(empty);
+  }
+
+  setOrderLookupStatus("");
+  orderDetails.hidden = false;
+}
+
+async function lookupShippingOrder(trackingNumber) {
+  orderLookupController?.abort();
+  orderLookupController = new AbortController();
+  orderDetails.hidden = true;
+  setOrderLookupStatus(`Looking up ${trackingNumber}...`);
+  openOrderDialog();
+
+  try {
+    const response = await fetch(
+      `/api/orders/by-tracking-number?tracking_number=${encodeURIComponent(trackingNumber)}`,
+      { signal: orderLookupController.signal }
+    );
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(payload.error || "Could not find shipping information.");
+    }
+
+    renderOrderDetails(payload);
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
+    startAfterOrderMatch = false;
+    orderDetails.hidden = true;
+    setOrderLookupStatus(error.message || "Could not find shipping information.", true);
+  }
+}
+
+function confirmOrderMatch() {
+  const trackingNumber = orderTrackingNumber.textContent;
+  const shouldStartRecording = startAfterOrderMatch;
+  startAfterOrderMatch = false;
+  setMessage(`Product details confirmed for ${trackingNumber}.`);
+  orderDialog.close();
+
+  if (shouldStartRecording) {
+    startRecording();
+  }
+}
+
+function reportOrderMismatch() {
+  startAfterOrderMatch = false;
+  orderMatchStatus.textContent = "Mismatch selected. Recording was not started. Check the shelf products.";
+  orderMatchStatus.classList.remove("success");
+  orderMatchStatus.classList.add("error");
+  setMessage("Product details do not match. Check the shelf products before recording.", true);
 }
 
 async function runCountdown() {
@@ -688,11 +816,36 @@ autoStartEnabledInput.addEventListener("change", () => {
 });
 invoiceInput.addEventListener("input", queueDuplicateCheck);
 invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
+orderDialogClose.addEventListener("click", () => orderDialog.close());
+orderMatchBtn.addEventListener("click", confirmOrderMatch);
+orderMismatchBtn.addEventListener("click", reportOrderMismatch);
+orderDialog.addEventListener("click", (event) => {
+  if (event.target === orderDialog) {
+    orderDialog.close();
+  }
+});
+orderDialog.addEventListener("close", () => {
+  orderLookupController?.abort();
+  orderLookupController = null;
+  startAfterOrderMatch = false;
+  if (!invoiceInput.disabled) {
+    invoiceInput.focus();
+  }
+});
 
 invoiceInput.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && autoStartEnabled()) {
-    event.preventDefault();
-    startRecording();
+  if (event.key !== "Enter") {
+    return;
+  }
+
+  event.preventDefault();
+  const trackingNumber = invoiceInput.value.trim();
+
+  if (trackingNumber) {
+    startAfterOrderMatch = autoStartEnabled();
+    lookupShippingOrder(trackingNumber);
+  } else {
+    setMessage("Scan or type the invoice / shipping receipt first.", true);
   }
 });
 

@@ -678,9 +678,240 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.order-dialog {
+  width: min(760px, calc(100% - 24px));
+  max-height: min(86vh, 860px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 0;
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3);
+}
+
+.order-dialog::backdrop {
+  background: rgba(16, 24, 20, 0.66);
+}
+
+.order-dialog-shell {
+  display: flex;
+  max-height: min(86vh, 860px);
+  flex-direction: column;
+}
+
+.order-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.order-dialog-header h2 {
+  font-size: 26px;
+}
+
+.icon-button {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel-strong);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.order-lookup-status {
+  margin: 20px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.order-lookup-status.error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  color: var(--danger);
+}
+
+.order-details {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+.order-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+  margin: 0;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.order-summary div,
+.order-item-details div {
+  min-width: 0;
+}
+
+.order-summary dt,
+.order-item-details dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.order-summary dd,
+.order-item-details dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 750;
+}
+
+.order-products-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 0 10px;
+}
+
+.order-products-heading h3 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.order-products-heading span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.order-items {
+  display: grid;
+}
+
+.order-item {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+
+.order-item-image {
+  width: 112px;
+  height: 112px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  object-fit: contain;
+}
+
+.order-item-content {
+  min-width: 0;
+}
+
+.order-item-name {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.order-item-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) 74px;
+  gap: 12px;
+  margin: 14px 0 0;
+}
+
+.order-item-details dd {
+  font-size: 13px;
+}
+
+.order-items-empty {
+  margin: 0;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.order-match-confirmation {
+  display: grid;
+  gap: 14px;
+  margin-top: 8px;
+  padding: 18px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.order-match-confirmation h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.order-match-confirmation p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.order-match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.order-match-status {
+  min-height: 20px;
+  font-weight: 750;
+}
+
+.order-match-status.error {
+  color: var(--danger);
+}
+
+.order-match-status.success {
+  color: var(--accent-strong);
+}
+
 @media (max-width: 420px) {
-  .result-details {
+  .result-details,
+  .order-summary,
+  .order-item-details {
     grid-template-columns: 1fr;
+  }
+
+  .order-dialog-header,
+  .order-details {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .order-item {
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .order-item-image {
+    width: 84px;
+    height: 84px;
+  }
+
+  .order-match-actions button {
+    width: 100%;
   }
 }
 
