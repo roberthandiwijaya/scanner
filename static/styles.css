@@ -874,19 +874,6 @@ button:disabled {
   gap: 10px;
 }
 
-.order-match-status {
-  min-height: 20px;
-  font-weight: 750;
-}
-
-.order-match-status.error {
-  color: var(--danger);
-}
-
-.order-match-status.success {
-  color: var(--accent-strong);
-}
-
 @media (max-width: 420px) {
   .result-details,
   .order-summary,

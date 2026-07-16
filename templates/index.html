@@ -67,7 +67,7 @@
           </label>
           <label>
             <input id="autoStartEnabled" type="checkbox">
-            Start on Enter
+            Start after match
           </label>
         </div>
 
@@ -86,8 +86,8 @@
         </div>
 
         <p class="hint">
-          Tip: Zebra LS2208 works like a keyboard. Put the cursor in the invoice field, scan,
-          then start recording.
+          Tip: Zebra LS2208 works like a keyboard. Put the cursor in the invoice field and scan
+          to review the order before recording.
         </p>
 
         <div class="divider" aria-hidden="true"></div>
@@ -195,10 +195,8 @@
               <p>Compare these details with the products collected from the shelf.</p>
             </div>
             <div class="order-match-actions">
-              <button id="orderMismatchBtn" class="danger" type="button">Does not match</button>
               <button id="orderMatchBtn" class="primary" type="button">Product details match</button>
             </div>
-            <p id="orderMatchStatus" class="order-match-status" role="status"></p>
           </section>
         </div>
       </div>

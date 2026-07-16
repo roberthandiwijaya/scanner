@@ -81,6 +81,7 @@ def init_storage() -> None:
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_recordings_invoice ON recordings(invoice)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at)")
+        db.execute("UPDATE recordings SET invoice = UPPER(invoice) WHERE invoice <> UPPER(invoice)")
 
 
 def db_connect() -> sqlite3.Connection:
@@ -93,14 +94,14 @@ def sanitize_invoice(value: str) -> str:
     value = value.strip()
     value = re.sub(r"\s+", "-", value)
     value = re.sub(r"[^A-Za-z0-9._-]", "", value)
-    return value[:80]
+    return value[:80].upper()
 
 
 def validate_tracking_number(value: str) -> str | None:
     value = value.strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", value):
         return None
-    return value
+    return value.upper()
 
 
 def safe_image_url(value: Any) -> str:
@@ -637,7 +638,7 @@ def parse_date_bound(value: str, end_of_day: bool = False) -> str | None:
 
 
 def recording_filters() -> tuple[str, list[Any]]:
-    query = request.args.get("q", "").strip()
+    query = request.args.get("q", "").strip().upper()
     date_from = parse_date_bound(request.args.get("date_from", "").strip())
     date_to = parse_date_bound(request.args.get("date_to", "").strip(), end_of_day=True)
     clauses: list[str] = []
@@ -707,7 +708,7 @@ def list_recordings():
 
 @app.get("/api/convert/recordings")
 def list_convertible_recordings():
-    query = request.args.get("q", "").strip()
+    query = request.args.get("q", "").strip().upper()
     clauses = ["filename LIKE ?"]
     params: list[Any] = ["%.webm"]
 

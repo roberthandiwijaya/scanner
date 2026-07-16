@@ -44,11 +44,11 @@ const orderItemCount = document.querySelector("#orderItemCount");
 const orderItems = document.querySelector("#orderItems");
 const orderItemTemplate = document.querySelector("#orderItemTemplate");
 const orderMatchBtn = document.querySelector("#orderMatchBtn");
-const orderMismatchBtn = document.querySelector("#orderMismatchBtn");
-const orderMatchStatus = document.querySelector("#orderMatchStatus");
 
 const PER_PAGE = 10;
 const COUNTDOWN_SECONDS = 3;
+const ORDER_LOOKUP_DELAY_MS = 600;
+const MIN_TRACKING_NUMBER_LENGTH = 6;
 
 let stream = null;
 let recorder = null;
@@ -59,6 +59,7 @@ let startedAt = 0;
 let timerHandle = null;
 let searchDebounce = null;
 let duplicateDebounce = null;
+let orderLookupDebounce = null;
 let currentPage = 1;
 let currentTotalPages = 1;
 let orderLookupController = null;
@@ -79,6 +80,23 @@ function autoStartEnabled() {
 function setMessage(text, isError = false) {
   message.textContent = text;
   message.classList.toggle("error", isError);
+}
+
+function uppercaseInvoiceInput() {
+  const originalValue = invoiceInput.value;
+  const upperValue = originalValue.toUpperCase();
+
+  if (originalValue === upperValue) {
+    return;
+  }
+
+  const selectionStart = invoiceInput.selectionStart;
+  const selectionEnd = invoiceInput.selectionEnd;
+  invoiceInput.value = upperValue;
+
+  if (selectionStart !== null && selectionEnd !== null) {
+    invoiceInput.setSelectionRange(selectionStart, selectionEnd);
+  }
 }
 
 function setRecordingUi(isRecording) {
@@ -176,8 +194,6 @@ function renderOrderDetails(order) {
   orderPackageNumber.textContent = displayValue(order.package_number);
   orderShippingCarrier.textContent = displayValue(order.shipping_carrier);
   orderItems.textContent = "";
-  orderMatchStatus.textContent = "";
-  orderMatchStatus.classList.remove("error", "success");
 
   const items = Array.isArray(order.items) ? order.items : [];
   orderItemCount.textContent = `${items.length} ${items.length === 1 ? "product" : "products"}`;
@@ -236,12 +252,28 @@ function confirmOrderMatch() {
   }
 }
 
-function reportOrderMismatch() {
-  startAfterOrderMatch = false;
-  orderMatchStatus.textContent = "Mismatch selected. Recording was not started. Check the shelf products.";
-  orderMatchStatus.classList.remove("success");
-  orderMatchStatus.classList.add("error");
-  setMessage("Product details do not match. Check the shelf products before recording.", true);
+function beginShippingOrderLookup(trackingNumber) {
+  if (!trackingNumber) {
+    return;
+  }
+
+  startAfterOrderMatch = autoStartEnabled();
+  lookupShippingOrder(trackingNumber);
+}
+
+function queueShippingOrderLookup() {
+  window.clearTimeout(orderLookupDebounce);
+  const trackingNumber = invoiceInput.value.trim();
+
+  if (trackingNumber.length < MIN_TRACKING_NUMBER_LENGTH) {
+    return;
+  }
+
+  orderLookupDebounce = window.setTimeout(() => {
+    if (invoiceInput.value.trim() === trackingNumber) {
+      beginShippingOrderLookup(trackingNumber);
+    }
+  }, ORDER_LOOKUP_DELAY_MS);
 }
 
 async function runCountdown() {
@@ -814,11 +846,14 @@ audioEnabledInput.addEventListener("change", resetCameraForAudioChange);
 autoStartEnabledInput.addEventListener("change", () => {
   localStorage.setItem("scanner-start-on-enter", autoStartEnabled() ? "1" : "0");
 });
-invoiceInput.addEventListener("input", queueDuplicateCheck);
+invoiceInput.addEventListener("input", () => {
+  uppercaseInvoiceInput();
+  queueDuplicateCheck();
+  queueShippingOrderLookup();
+});
 invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
 orderDialogClose.addEventListener("click", () => orderDialog.close());
 orderMatchBtn.addEventListener("click", confirmOrderMatch);
-orderMismatchBtn.addEventListener("click", reportOrderMismatch);
 orderDialog.addEventListener("click", (event) => {
   if (event.target === orderDialog) {
     orderDialog.close();
@@ -839,11 +874,11 @@ invoiceInput.addEventListener("keydown", (event) => {
   }
 
   event.preventDefault();
+  window.clearTimeout(orderLookupDebounce);
   const trackingNumber = invoiceInput.value.trim();
 
   if (trackingNumber) {
-    startAfterOrderMatch = autoStartEnabled();
-    lookupShippingOrder(trackingNumber);
+    beginShippingOrderLookup(trackingNumber);
   } else {
     setMessage("Scan or type the invoice / shipping receipt first.", true);
   }

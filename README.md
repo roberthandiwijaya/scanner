@@ -54,7 +54,7 @@ The camera has a short countdown before recording starts, so the operator has a 
 
 Turn on `Record audio` before starting if microphone audio is needed. The live webcam preview stays muted to avoid echo, but the saved recording will include audio when the browser has microphone permission.
 
-Turn on `Start on Enter` only when you want a barcode scan with an Enter suffix to start recording automatically.
+Turn on `Start after match` when recording should begin after the operator confirms the product details.
 
 Use `Stop webcam preview` to turn off the live camera preview after recording or when the workstation is idle. The next `Start recording` action will request and show the camera again.
 
@@ -120,7 +120,9 @@ Without trusting that certificate, the browser may show a warning and may still 
 
 The Zebra LS2208 usually works as a USB HID keyboard. Put the cursor in the invoice field and scan.
 
-When the scanner sends Enter after a shipping receipt, the dashboard looks up the shipment and opens an order-details popup. The popup shows the order number, package number, carrier, product variations, SKUs, quantities, and product images. The operator must confirm whether the details match the products collected from the shelf. When `Start on Enter` is enabled, recording waits for a matching confirmation; choosing `Does not match` prevents the automatic recording from starting.
+Invoice and shipping receipt values are normalized to uppercase in the scanner field, API lookup, and database. Existing lowercase database entries are migrated to uppercase automatically when the application starts; recording filenames are left unchanged.
+
+After the shipping receipt field stops receiving scanner input for a short moment, the dashboard automatically looks up the shipment and opens an order-details popup. Enter also opens it immediately when the scanner sends an Enter suffix. The popup shows the order number, package number, carrier, product variations, SKUs, quantities, and product images. The operator confirms that the details match the products collected from the shelf. When `Start after match` is enabled, clicking `Product details match` starts the recording; otherwise it confirms the order and closes the popup without starting.
 
 The lookup is sent through the Flask server so the API key is never exposed to browser JavaScript. Create `.env` from `.env.example` and set:
 
@@ -136,8 +138,8 @@ docker compose up -d --build recorder
 
 Recommended scanner setting:
 
-- Keep `Start on Enter` off if scanning should only fill the invoice field.
-- Turn on `Start on Enter` if the scanner sends an `Enter` suffix and you want scanning to immediately start recording.
+- Keep `Start after match` off when confirming the product should not start recording.
+- Turn on `Start after match` when recording should begin immediately after a matching confirmation.
 - Do not add random prefixes/suffixes unless your invoice format needs them.
 
 ## Upload Existing Videos
