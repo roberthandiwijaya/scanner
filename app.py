@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import mimetypes
 import os
 import queue
 import re
@@ -18,6 +20,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
+from archive import ArchiveService, ReservationError, init_schema as init_archive_schema, reserve_recordings, release_recordings
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -54,17 +57,43 @@ CONVERSION_JOBS_LOCK = threading.Lock()
 CONVERSION_QUEUE: queue.Queue[tuple[str, int, str, str]] = queue.Queue()
 CONVERSION_WORKER_LOCK = threading.Lock()
 CONVERSION_WORKER_STARTED = False
+ACTIVE_UPLOADS = 0
+ACTIVE_UPLOADS_LOCK = threading.Lock()
+
 
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
 
 
+@app.before_request
+def track_recording_upload():
+    global ACTIVE_UPLOADS
+    # Mark busy before accessing request.form: multipart parsing also writes disk.
+    if request.method == 'POST' and request.path == '/api/recordings':
+        request.environ['scanner.upload_counted'] = True
+        with ACTIVE_UPLOADS_LOCK:
+            ACTIVE_UPLOADS += 1
+
+
+@app.teardown_request
+def finish_recording_upload(error=None):
+    global ACTIVE_UPLOADS
+    if request.environ.pop('scanner.upload_counted', False):
+        with ACTIVE_UPLOADS_LOCK:
+            ACTIVE_UPLOADS = max(0, ACTIVE_UPLOADS - 1)
+
+
+def recording_io_busy():
+    with ACTIVE_UPLOADS_LOCK:
+        return ACTIVE_UPLOADS > 0
+
+
 def init_storage() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     CONVERTED_DIR.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DB_PATH) as db:
+    with sqlite3.connect(DB_PATH, factory=StorageConnection) as db:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS recordings (
@@ -82,12 +111,66 @@ def init_storage() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_recordings_invoice ON recordings(invoice)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at)")
         db.execute("UPDATE recordings SET invoice = UPPER(invoice) WHERE invoice <> UPPER(invoice)")
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS scan_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id TEXT NOT NULL UNIQUE,
+                mutation_token TEXT NOT NULL,
+                tracking_number TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                timestamp_basis TEXT NOT NULL,
+                lookup_status TEXT NOT NULL DEFAULT 'not_requested',
+                lookup_error TEXT,
+                lookup_http_status INTEGER,
+                order_snapshot TEXT,
+                recording_id INTEGER UNIQUE,
+                recording_snapshot TEXT,
+                video_deleted INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_scan_events_date ON scan_events(submitted_at DESC, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_scan_events_label ON scan_events(tracking_number)")
+        # Retain recording IDs after deletion so startup never resurrects imports.
+        db.row_factory = sqlite3.Row
+        rows = db.execute("SELECT * FROM recordings WHERE id NOT IN (SELECT recording_id FROM scan_events WHERE recording_id IS NOT NULL)").fetchall()
+        for row in rows:
+            db.execute("""
+                INSERT OR IGNORE INTO scan_events
+                    (submission_id, mutation_token, tracking_number, mode, submitted_at,
+                     source, timestamp_basis, recording_id, recording_snapshot)
+                VALUES (?, ?, ?, ?, ?, 'imported_recording', 'saved_at', ?, ?)
+            """, (f"legacy-recording:{row['id']}", uuid.uuid4().hex,
+                  row["invoice"], row["mode"], row["created_at"], row["id"],
+                  json.dumps(row_to_dict(row))))
+        init_archive_schema(db)
+
+
+class StorageConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
 
 
 def db_connect() -> sqlite3.Connection:
-    db = sqlite3.connect(DB_PATH)
+    db = sqlite3.connect(DB_PATH, factory=StorageConnection)
     db.row_factory = sqlite3.Row
+    db.create_function("video_exists", 1, video_exists)
+    # Do not require SQLite's optional JSON1 extension (older Windows builds).
+    db.create_function("order_field", 2, lambda value, key: json.loads(value or "{}").get(key, ""))
     return db
+
+
+def video_exists(filename: str | None) -> int:
+    if not filename:
+        return 0
+    try:
+        return int(recording_path(filename).is_file())
+    except (ValueError, OSError):
+        return 0
 
 
 def sanitize_invoice(value: str) -> str:
@@ -236,7 +319,12 @@ def repair_webm_metadata(path: Path) -> bool:
     return True
 
 
-def validate_video_file(path: Path, expected_duration_seconds: float | None = None) -> str | None:
+def validate_video_file(
+    path: Path,
+    expected_duration_seconds: float | None = None,
+    *,
+    allow_missing_webm_duration: bool = False,
+) -> str | None:
     if path.suffix.lower() == ".webm" and not has_webm_header(path):
         return "Recording file is incomplete. Please retry the recording."
 
@@ -250,7 +338,7 @@ def validate_video_file(path: Path, expected_duration_seconds: float | None = No
         "-v",
         "error",
         "-show_entries",
-        "format=duration:stream=codec_type",
+        "format=duration:stream=codec_type,duration",
         "-of",
         "json",
         str(path),
@@ -267,12 +355,26 @@ def validate_video_file(path: Path, expected_duration_seconds: float | None = No
     if not any(stream.get("codec_type") == "video" for stream in streams):
         return "Video file does not contain a readable video stream."
 
-    try:
-        duration_seconds = float((payload.get("format") or {}).get("duration") or 0)
-    except (TypeError, ValueError):
-        duration_seconds = 0
+    # Some mobile containers expose duration on the video stream, not the format.
+    # Ignore audio-only duration: it must not conceal a truncated video track.
+    duration_values = [(payload.get("format") or {}).get("duration")]
+    duration_values.extend(stream.get("duration") for stream in streams if stream.get("codec_type") == "video")
+    duration_seconds = 0
+    for value in duration_values:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(candidate) and candidate > 0:
+            duration_seconds = candidate
+            break
 
     if duration_seconds <= 0:
+        # Only the pre-remux WebM check may defer missing duration. The final
+        # check must always verify a real media duration against the client timer.
+        if allow_missing_webm_duration and path.suffix.lower() == ".webm":
+            return None
+        app.logger.warning("Missing video duration for %s (format=%s, streams=%s).", path.name, payload.get("format"), streams)
         return "Video duration could not be verified. Please retry the recording."
 
     if expected_duration_seconds is not None and expected_duration_seconds >= 1:
@@ -464,8 +566,14 @@ def run_conversion_job(
     quality_key: str,
 ) -> None:
     temp_path: Path | None = None
+    process = None
+    safe_to_release = True
 
     try:
+        with db_connect() as db:
+            # Same owner is idempotent; a different operation cannot access this source.
+            db.execute("BEGIN IMMEDIATE")
+            reserve_recordings(db, [recording_id], job_id, "conversion")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError("FFmpeg is not installed in this environment.")
@@ -555,8 +663,18 @@ def run_conversion_job(
             },
         )
     except Exception as error:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=10)
+            except Exception:
+                safe_to_release = False
+                app.logger.exception("FFmpeg termination uncertain; keeping recording reservation")
+        if temp_path is not None and safe_to_release:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                app.logger.warning("Could not remove conversion temporary file")
         app.logger.warning("Conversion job %s failed: %s", job_id, error)
         set_conversion_job(
             job_id,
@@ -564,6 +682,10 @@ def run_conversion_job(
             progress=0,
             message=str(error) or "Conversion failed.",
         )
+    finally:
+        if safe_to_release:
+            with db_connect() as db:
+                release_recordings(db, [recording_id], job_id)
 
 
 def is_allowed_certificate_host(domain: str) -> bool:
@@ -674,6 +796,144 @@ def convert_page() -> str:
         resolutions=CONVERT_RESOLUTIONS,
         qualities=CONVERT_QUALITIES,
     )
+
+
+@app.get("/history")
+def history_page():
+    return render_template("history.html")
+
+
+def scan_event_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result = {key: row[key] for key in (
+        "id", "tracking_number", "mode", "submitted_at", "source",
+        "timestamp_basis", "lookup_status", "lookup_error")}
+    snapshot = json.loads(row["order_snapshot"] or "{}")
+    result.update({key: snapshot.get(key, [] if key == "items" else "")
+                   for key in ("order_sn", "package_number", "shipping_carrier", "items")})
+    recording = json.loads(row["recording_snapshot"] or "null")
+    status = "not_recorded"
+    if recording:
+        status = "archived" if row["archived_at"] else "deleted" if row["video_deleted"] else (
+            "available" if row["live_recording_id"] and video_exists(row["live_filename"]) else "missing")
+        if status != "available":
+            recording.pop("video_url", None)
+            recording.pop("download_url", None)
+        else:
+            result["video_url"] = recording["video_url"]
+            result["download_url"] = recording["download_url"]
+    result.update(video_status=status, recording=recording,
+                  recording_size_bytes=recording["size_bytes"] if recording else None,
+                  archive_job_id=row["archive_job_id"], archived_at=row["archived_at"],
+                  archive_location=row["archive_location"],
+                  backup_verified_label=row["verified_backup_label"] if status == "available" else None)
+    return result
+
+
+@app.get("/api/scan-events")
+def list_scan_events():
+    clauses, params = [], []
+    query = request.args.get("q", "").strip()
+    if query:
+        clauses.append("(e.tracking_number LIKE ? OR order_field(e.order_snapshot, 'order_sn') LIKE ? OR order_field(e.order_snapshot, 'package_number') LIKE ? OR order_field(e.order_snapshot, 'shipping_carrier') LIKE ?)")
+        params.extend([f"%{query}%"] * 4)
+    for key in ("mode", "lookup_status", "video_status"):
+        value = request.args.get(key, "").strip()
+        allowed = {"mode": ALLOWED_MODES,
+                   "lookup_status": {"not_requested", "pending", "success", "not_found", "error"},
+                   "video_status": {"available", "not_recorded", "deleted", "missing", "archived"}}[key]
+        if value:
+            if value not in allowed:
+                return jsonify({"error": f"Invalid {key} filter."}), 400
+            clauses.append(f"{key if key == 'video_status' else 'e.' + key} = ?")
+            params.append(value)
+    for key, operator in (("date_from", ">="), ("date_to", "<")):
+        value = request.args.get(key, "").strip()
+        if value:
+            bound = parse_date_bound(value, end_of_day=key == "date_to")
+            if bound is None:
+                return jsonify({"error": f"Invalid {key} date."}), 400
+            clauses.append(f"e.submitted_at {operator} ?")
+            params.append(bound)
+    # File availability participates in the SQL predicate before pagination.
+    base = """FROM scan_events e LEFT JOIN recordings r ON r.id = e.recording_id"""
+    status_sql = """CASE WHEN e.archived_at IS NOT NULL THEN 'archived'
+        WHEN e.recording_id IS NULL THEN 'not_recorded'
+        WHEN e.video_deleted = 1 THEN 'deleted'
+        WHEN r.id IS NOT NULL AND video_exists(r.filename) = 1 THEN 'available'
+        ELSE 'missing' END"""
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    where = where.replace("video_status =", f"({status_sql}) =")
+    per_page = parse_positive_int(request.args.get("per_page"), DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE)
+    with db_connect() as db:
+        total = db.execute(f"SELECT COUNT(*) {base}{where}", params).fetchone()[0]
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = parse_positive_int(request.args.get("page"), 1, total_pages)
+        rows = db.execute(f"""SELECT e.*, r.id AS live_recording_id, r.filename AS live_filename,
+            (SELECT j.label FROM archive_jobs j JOIN archive_items ai ON ai.job_id=j.id
+             WHERE ai.recording_id=e.recording_id AND j.state IN ('verified','removal_pending')
+             AND j.confirmed_at IS NULL ORDER BY j.created_at DESC LIMIT 1) AS verified_backup_label
+            {base}{where} ORDER BY e.submitted_at DESC, e.id DESC LIMIT ? OFFSET ?""",
+            [*params, per_page, (page - 1) * per_page]).fetchall()
+    return jsonify(items=[scan_event_dict(row) for row in rows], page=page,
+                   per_page=per_page, total=total, total_pages=total_pages)
+
+
+@app.post("/api/scan-events")
+def create_scan_event():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "A JSON object is required."}), 400
+    submission_id = payload.get("submission_id")
+    tracking = payload.get("tracking_number")
+    mode = payload.get("mode")
+    source = payload.get("source", "scan")
+    if (not isinstance(submission_id, str) or not 1 <= len(submission_id) <= 200
+            or not isinstance(tracking, str) or validate_tracking_number(tracking) is None
+            or not isinstance(mode, str) or mode not in ALLOWED_MODES
+            or not isinstance(source, str) or source not in {"scan", "manual_recording", "manual_upload"}):
+        return jsonify({"error": "Invalid submission, tracking number, mode, or source."}), 400
+    tracking = validate_tracking_number(tracking)
+    with db_connect() as db:
+        db.execute("""INSERT OR IGNORE INTO scan_events
+            (submission_id, mutation_token, tracking_number, mode, submitted_at, source, timestamp_basis)
+            VALUES (?, ?, ?, ?, ?, ?, 'submitted_at')""",
+            (submission_id, uuid.uuid4().hex, tracking, mode, datetime.now(timezone.utc).isoformat(), source))
+        inserted = db.execute("SELECT changes()").fetchone()[0]
+        row = db.execute("SELECT * FROM scan_events WHERE submission_id = ?", (submission_id,)).fetchone()
+        if (row["tracking_number"], row["mode"], row["source"]) != (tracking, mode, source):
+            return jsonify({"error": "Submission identifier already belongs to another submission."}), 409
+    return jsonify(id=row["id"], mutation_token=row["mutation_token"],
+                   lookup_status=row["lookup_status"]), 201 if inserted else 200
+
+
+@app.post("/api/scan-events/<int:event_id>/lookup")
+def lookup_scan_event(event_id: int):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "A JSON object is required."}), 400
+    with db_connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM scan_events WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            return jsonify({"error": "Scan event not found."}), 404
+        if payload.get("mutation_token") != row["mutation_token"]:
+            return jsonify({"error": "Invalid scan event token."}), 403
+        if row["lookup_status"] == "pending":
+            return jsonify({"error": "Lookup is pending or was interrupted."}), 409
+        if row["lookup_status"] != "not_requested":
+            if row["lookup_status"] == "success":
+                return jsonify(json.loads(row["order_snapshot"]))
+            return jsonify({"error": row["lookup_error"]}), row["lookup_http_status"]
+        db.execute("UPDATE scan_events SET lookup_status = 'pending' WHERE id = ?", (event_id,))
+    # Commit the claim before network I/O. Interrupted calls remain pending.
+    result, status = lookup_order(row["tracking_number"])
+    lookup_status = "success" if status == 200 else "not_found" if status == 404 else "error"
+    with db_connect() as db:
+        db.execute("""UPDATE scan_events SET lookup_status = ?, lookup_error = ?,
+            lookup_http_status = ?, order_snapshot = ? WHERE id = ? AND lookup_status = 'pending'""",
+            (lookup_status, result.get("error"), status,
+             json.dumps(result) if status == 200 else None, event_id))
+    return jsonify(result), status
 
 
 @app.get("/api/recordings")
@@ -800,6 +1060,15 @@ def convert_recording():
         return jsonify({"error": "Choose a valid quality setting."}), 400
 
     job_id = uuid.uuid4().hex
+    try:
+        with db_connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT filename FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+            if row is None or not video_exists(row["filename"]):
+                return jsonify({"error": "Recording is unavailable."}), 404
+            reserve_recordings(db, [recording_id], job_id, "conversion")
+    except ReservationError as error:
+        return jsonify({"error": str(error)}), 409
     with CONVERSION_JOBS_LOCK:
         CONVERSION_JOBS[job_id] = {
             "job_id": job_id,
@@ -809,8 +1078,13 @@ def convert_recording():
             "result": None,
         }
 
-    ensure_conversion_worker()
-    CONVERSION_QUEUE.put((job_id, recording_id, resolution_key, quality_key))
+    try:
+        ensure_conversion_worker()
+        CONVERSION_QUEUE.put((job_id, recording_id, resolution_key, quality_key))
+    except Exception:
+        with db_connect() as db:
+            release_recordings(db, [recording_id], job_id)
+        raise
 
     return jsonify(get_conversion_job(job_id)), 202
 
@@ -847,15 +1121,9 @@ def duplicate_recording():
     )
 
 
-@app.get("/api/orders/by-tracking-number")
-def order_by_tracking_number():
-    tracking_number = validate_tracking_number(request.args.get("tracking_number", ""))
-
-    if tracking_number is None:
-        return jsonify({"error": "Enter a valid shipping receipt or tracking number."}), 400
-
+def lookup_order(tracking_number: str) -> tuple[dict[str, Any], int]:
     if not ORDER_LOOKUP_API_KEY:
-        return jsonify({"error": "Shipping order lookup is not configured."}), 503
+        return {"error": "Shipping order lookup is not configured."}, 503
 
     query = urlencode({"tracking_number": tracking_number})
     upstream_request = UrlRequest(
@@ -870,23 +1138,32 @@ def order_by_tracking_number():
     try:
         with urlopen(upstream_request, timeout=ORDER_LOOKUP_TIMEOUT_SECONDS) as response:
             payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
-        return jsonify(normalize_order_payload(payload, tracking_number))
+        return normalize_order_payload(payload, tracking_number), 200
     except HTTPError as error:
         if error.code == 404:
-            return jsonify({"error": "Tracking number not found."}), 404
+            return {"error": "Tracking number not found."}, 404
         if error.code in {401, 403}:
             app.logger.warning("Shipping order API rejected its configured credentials.")
-            return jsonify({"error": "Shipping order lookup authentication failed."}), 502
+            return {"error": "Shipping order lookup authentication failed."}, 502
         if error.code == 429:
-            return jsonify({"error": "Shipping order lookup is busy. Please try again shortly."}), 503
+            return {"error": "Shipping order lookup is busy. Please try again shortly."}, 503
         app.logger.warning("Shipping order API returned HTTP %s.", error.code)
-        return jsonify({"error": "Shipping order lookup is temporarily unavailable."}), 502
+        return {"error": "Shipping order lookup is temporarily unavailable."}, 502
     except (TimeoutError, URLError) as error:
         app.logger.warning("Shipping order API could not be reached: %s", error)
-        return jsonify({"error": "Could not reach the shipping order service."}), 502
+        return {"error": "Could not reach the shipping order service."}, 502
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as error:
         app.logger.warning("Shipping order API returned invalid data: %s", error)
-        return jsonify({"error": "Shipping order service returned invalid data."}), 502
+        return {"error": "Shipping order service returned invalid data."}, 502
+
+
+@app.get("/api/orders/by-tracking-number")
+def order_by_tracking_number():
+    tracking_number = validate_tracking_number(request.args.get("tracking_number", ""))
+    if tracking_number is None:
+        return jsonify({"error": "Enter a valid shipping receipt or tracking number."}), 400
+    payload, status = lookup_order(tracking_number)
+    return jsonify(payload), status
 
 
 @app.get("/api/summary")
@@ -939,6 +1216,17 @@ def recording_summary():
     )
 
 
+def validate_upload_event(event, token: str, invoice: str, mode: str) -> str | None:
+    if event is None or event["mutation_token"] != token:
+        return "Invalid scan event or token."
+    raw_tracking = validate_tracking_number(request.form.get("invoice", ""))
+    if event["tracking_number"] != raw_tracking or sanitize_invoice(event["tracking_number"]) != invoice or event["mode"] != mode:
+        return "Recording label and mode must match the scan event."
+    if event["recording_id"] is not None:
+        return "Scan event already has a recording."
+    return None
+
+
 @app.post("/api/recordings")
 def create_recording():
     invoice = sanitize_invoice(request.form.get("invoice", ""))
@@ -956,6 +1244,18 @@ def create_recording():
     if video is None or video.filename == "":
         return jsonify({"error": "Video file is required."}), 400
 
+    event_id_raw = request.form.get("scan_event_id")
+    event_token = request.form.get("scan_event_token")
+    event_id = parse_required_positive_int(event_id_raw)
+    if event_id_raw is not None or event_token is not None:
+        if event_id is None or not event_token:
+            return jsonify({"error": "Scan event ID and token are required together."}), 400
+        with db_connect() as db:
+            event = db.execute("SELECT * FROM scan_events WHERE id = ?", (event_id,)).fetchone()
+        error = validate_upload_event(event, event_token, invoice, mode)
+        if error:
+            return jsonify({"error": error}), 409
+
     month_dir = VIDEO_DIR / datetime.now(timezone.utc).strftime("%Y-%m")
     month_dir.mkdir(parents=True, exist_ok=True)
 
@@ -965,7 +1265,12 @@ def create_recording():
     temp_path = month_dir / f".{Path(filename).stem}.uploading{Path(filename).suffix}"
     video.save(temp_path)
 
-    validation_error = validate_video_file(temp_path, expected_duration_seconds)
+    # Browser WebM blobs often omit duration until remuxed. Still verify the
+    # header and readable video before repair, then enforce duration afterward.
+    if temp_path.suffix.lower() == ".webm":
+        validation_error = validate_video_file(temp_path, expected_duration_seconds, allow_missing_webm_duration=True)
+    else:
+        validation_error = validate_video_file(temp_path, expected_duration_seconds)
     if validation_error:
         temp_path.unlink(missing_ok=True)
         return jsonify({"error": validation_error}), 400
@@ -981,49 +1286,83 @@ def create_recording():
     size_bytes = target_path.stat().st_size
     created_at = datetime.now(timezone.utc).isoformat()
 
-    with db_connect() as db:
-        cursor = db.execute(
-            """
-            INSERT INTO recordings
-                (invoice, mode, filename, original_name, content_type, size_bytes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                invoice,
-                mode,
-                relative_name,
-                video.filename,
-                video.mimetype or "video/webm",
-                size_bytes,
-                created_at,
-            ),
-        )
-        row = db.execute("SELECT * FROM recordings WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    try:
+        with db_connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if event_id is not None:
+                event = db.execute("SELECT * FROM scan_events WHERE id = ?", (event_id,)).fetchone()
+                error = validate_upload_event(event, event_token, invoice, mode)
+                if error:
+                    raise ValueError(error)
+            cursor = db.execute(
+                """
+                INSERT INTO recordings
+                    (invoice, mode, filename, original_name, content_type, size_bytes, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice,
+                    mode,
+                    relative_name,
+                    video.filename,
+                    video.mimetype or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                    size_bytes,
+                    created_at,
+                ),
+            )
+            row = db.execute("SELECT * FROM recordings WHERE id = ?", (cursor.lastrowid,)).fetchone()
+
+            if event_id is None:
+                cursor = db.execute("""INSERT INTO scan_events
+                    (submission_id, mutation_token, tracking_number, mode, submitted_at, source, timestamp_basis)
+                    VALUES (?, ?, ?, ?, ?, 'manual_upload', 'saved_at')""",
+                    (f"legacy-upload:{uuid.uuid4().hex}", uuid.uuid4().hex, invoice, mode, created_at))
+                event_id = cursor.lastrowid
+            db.execute("UPDATE scan_events SET recording_id = ?, recording_snapshot = ? WHERE id = ?",
+                       (row["id"], json.dumps(row_to_dict(row)), event_id))
+    except (ValueError, sqlite3.Error) as error:
+        try:
+            target_path.unlink()
+        except FileNotFoundError:
+            pass
+        app.logger.warning("Could not associate uploaded recording: %s", error)
+        return jsonify({"error": str(error) if isinstance(error, ValueError) else "Could not save recording history."}), 409 if isinstance(error, ValueError) else 500
 
     return jsonify(row_to_dict(row)), 201
 
 
 @app.delete("/api/recordings/<int:recording_id>")
 def delete_recording(recording_id: int):
-    with db_connect() as db:
-        row = db.execute("SELECT * FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+    owner = uuid.uuid4().hex
+    try:
+        with db_connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM recordings WHERE id = ?", (recording_id,)).fetchone()
+            if row is None:
+                return jsonify({"error": "Recording not found."}), 404
+            reserve_recordings(db, [recording_id], owner, "delete")
+    except ReservationError as error:
+        return jsonify({"error": str(error)}), 409
 
-    if row is None:
-        return jsonify({"error": "Recording not found."}), 404
-
+    removed = False
     try:
         path = recording_path(row["filename"])
-        if path.exists():
+        try:
             path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        app.logger.warning("Could not delete recording file %s: %s", row["filename"], error)
-        return jsonify({"error": "Could not delete recording file."}), 500
-
-    with db_connect() as db:
-        db.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
-
+        except FileNotFoundError:
+            pass
+        removed = True
+        with db_connect() as db:
+            db.execute("UPDATE scan_events SET video_deleted = 1 WHERE recording_id = ?", (recording_id,))
+            db.execute("DELETE FROM recordings WHERE id = ?", (recording_id,))
+            release_recordings(db, [recording_id], owner)
+    except (OSError, sqlite3.Error, ValueError) as error:
+        app.logger.warning("Could not delete recording %s: %s", recording_id, error)
+        # If unlink succeeded but metadata failed, retain the reservation for review.
+        if not removed:
+            with db_connect() as db:
+                release_recordings(db, [recording_id], owner)
+        return jsonify({"error": "Could not complete deletion. Refresh and review the recording before retrying."}), 500
     return jsonify({"ok": True})
 
 
@@ -1056,6 +1395,130 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.get("/archive")
+def archive_page():
+    return render_template("archive.html")
+
+
+def archive_json_action(action):
+    # The app also runs behind Caddy; compare Origin with the browser-facing Host.
+    origin = request.headers.get("Origin")
+    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        return jsonify({"error": "Cross-site archive requests are not allowed."}), 403
+    if origin:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != request.host.lower():
+            return jsonify({"error": "Archive requests must use the same origin."}), 403
+    elif request.headers.get("Sec-Fetch-Site") != "same-origin":
+        return jsonify({"error": "A same-origin browser request is required."}), 403
+    payload = request.get_json(silent=True)
+    if not request.is_json or not isinstance(payload, dict):
+        return jsonify({"error": "A JSON object is required."}), 400
+    try:
+        return jsonify(action(payload))
+    except ReservationError as error:
+        return jsonify({"error": str(error)}), 409
+    except (ValueError, FileNotFoundError) as error:
+        return jsonify({"error": str(error)}), 400
+    except OSError:
+        app.logger.exception("Archive storage operation failed")
+        return jsonify({"error": "Archive storage is unavailable. Local files were not authorized for removal by this request."}), 503
+
+
+@app.get('/api/archive/automatic/preview')
+def automatic_archive_preview():
+    return jsonify(archive_service.automatic_preview())
+
+
+@app.route('/api/archive/automatic', methods=['GET', 'POST'])
+def automatic_archive_runs():
+    if request.method == 'POST':
+        def start(payload):
+            if payload.get('authorize_removal') is not True:
+                raise ValueError('Explicit automatic local-removal authorization is required.')
+            return archive_service.create_automatic_run(rate_mbps=payload.get('rate_mbps', 5))
+        return archive_json_action(start)
+    return jsonify(archive_service.list_automatic_runs())
+
+
+@app.post('/api/archive/automatic/<run_id>/control')
+def automatic_archive_control(run_id):
+    return archive_json_action(lambda payload: archive_service.control_automatic_run(run_id, payload.get('action')))
+
+
+@app.get('/archive/settings')
+def archive_settings_page():
+    return render_template('archive_settings.html')
+
+
+@app.route('/api/archive/settings', methods=['GET', 'POST'])
+def archive_settings():
+    if request.method == 'GET':
+        return jsonify(archive_service.settings())
+    return archive_json_action(lambda payload: archive_service.configure(
+        payload.get('folder'), payload.get('label'), save=True))
+
+
+@app.post('/api/archive/settings/test')
+def archive_settings_test():
+    return archive_json_action(lambda payload: archive_service.configure(
+        payload.get('folder'), payload.get('label'), save=False))
+
+
+@app.get("/api/archive/config")
+def archive_config():
+    return jsonify(archive_service.config())
+
+
+@app.get("/api/archive/preview")
+def archive_preview():
+    try:
+        return jsonify(archive_service.preview(
+            request.args.get("cutoff", ""),
+            parse_positive_int(request.args.get("page"), 1),
+            parse_positive_int(request.args.get("per_page"), 25, 50)))
+    except (ValueError, OSError) as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@app.route("/api/archive/jobs", methods=["GET", "POST"])
+def archive_jobs():
+    if request.method == "POST":
+        return archive_json_action(lambda payload: archive_service.create_job(payload.get("recording_ids"), payload.get("cutoff")))
+    return jsonify(archive_service.list_jobs(
+        parse_positive_int(request.args.get("page"), 1),
+        parse_positive_int(request.args.get("per_page"), 10, 50)))
+
+
+@app.get("/api/archive/jobs/<job_id>")
+def archive_job(job_id):
+    try:
+        return jsonify(archive_service.get_job(job_id))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 404
+
+
+@app.post("/api/archive/jobs/<job_id>/removal-preview")
+def archive_removal_preview(job_id):
+    return archive_json_action(lambda payload: archive_service.removal_preview(job_id))
+
+
+@app.post("/api/archive/jobs/<job_id>/confirm-removal")
+def archive_confirm_removal(job_id):
+    return archive_json_action(lambda payload: archive_service.confirm_removal(
+        job_id, payload.get("token", ""), payload.get("digest", "")))
+
+
+@app.post("/api/archive/jobs/<job_id>/cancel")
+def archive_cancel(job_id):
+    return archive_json_action(lambda payload: archive_service.cancel(job_id))
+
+
+@app.post("/api/archive/jobs/<job_id>/resume")
+def archive_resume(job_id):
+    return archive_json_action(lambda payload: archive_service.resume(job_id))
+
+
 @app.get("/api/caddy/allow-certificate")
 def allow_caddy_certificate():
     domain = request.args.get("domain", "")
@@ -1067,6 +1530,18 @@ def allow_caddy_certificate():
 
 
 init_storage()
+_archive_root = os.environ.get("ARCHIVE_DIR", "").strip()
+archive_service = ArchiveService(
+    db_connect, recording_path, converted_path, converted_filename,
+    list(CONVERT_RESOLUTIONS), list(CONVERT_QUALITIES),
+    archive_root=Path(_archive_root) if _archive_root else None,
+    destination_id=os.environ.get("ARCHIVE_DESTINATION_ID", "").strip(),
+    label=os.environ.get("ARCHIVE_LABEL", "Backup drive").strip(),
+    settings_root=os.environ.get('ARCHIVE_SETTINGS_ROOT', '').strip() or None,
+    io_busy=recording_io_busy,
+)
+if os.environ.get("ARCHIVE_WORKER_DISABLED") != "1":
+    archive_service.start()
 
 
 if __name__ == "__main__":

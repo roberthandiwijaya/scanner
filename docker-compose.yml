@@ -17,7 +17,7 @@ services:
     depends_on:
       - recorder
     ports:
-      - "8443:8443"
+      - "9443:8443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./data/caddy/data:/data

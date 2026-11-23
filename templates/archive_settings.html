@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Archive settings</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/archive_settings.js" defer></script></head>
+<body>
+<header class="topbar history-shell"><div><p class="eyebrow">Another hard drive · verified backups</p><h1>Archive settings.</h1></div><div class="top-actions"><nav class="menu-bar" aria-label="Main navigation"><a href="/">Dashboard</a><a href="/history">History</a><a href="/archive" class="active">Archive</a><a href="/convert">Convert</a></nav><button id="themeToggle" class="theme-toggle" type="button">Dark mode</button></div></header>
+<main class="history-shell archive-main"><section class="panel">
+<h2>Choose a folder on your backup drive</h2>
+<p class="hint">The other hard drive must be mounted into Docker once. This page can choose folders inside that mounted drive; it cannot browse Windows drives or mount them automatically.</p>
+<p id="settingsState" class="archive-notice" role="status">Loading settings…</p>
+<form id="settingsForm"><div class="field-row"><label for="destinationLabel">Destination name</label><input id="destinationLabel" type="text" maxlength="80" required placeholder="Backup hard drive"></div>
+<div class="field-row"><label for="destinationFolder">Folder within the mounted backup drive</label><input id="destinationFolder" type="text" maxlength="160" required placeholder="ScannerArchive"><p class="hint">Example: ScannerArchive or Backups/Scanner. Do not enter D:\\, a UNC path, or ../. Choose a different physical drive from your recordings.</p></div>
+<p class="hint">Save creates the folder and its unique backup identity if needed, tests writing and safe file publication, then saves settings. No recordings are moved or deleted. Finish or cancel unfinished jobs before changing the destination.</p>
+<div class="archive-controls"><button id="testDestination" type="button">Test existing folder</button><button id="saveDestination" type="submit">Save and test destination</button><a href="/archive">Back to Archive</a></div></form>
+<p id="settingsResult" role="status" aria-live="polite"></p>
+<details><summary>One-time Docker setup</summary><p>Use the provided <code>docker-compose.drive.yml.example</code> to bind an existing folder on your other hard drive to <code>/backup-drive</code>. Set <code>ARCHIVE_SETTINGS_ROOT=/backup-drive</code> and rebuild with that override. Drive access must be granted to Docker Desktop. Do not use a folder on the same physical disk just to change the drive letter.</p><p>Existing backup jobs keep their original destination identity and folder. Settings changes cannot redirect removal to a different location. Always test using disposable videos first.</p></details>
+</section></main></body></html>

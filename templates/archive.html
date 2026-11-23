@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Archive recordings · Package Video Recorder</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="/static/archive.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar history-shell">
+      <div><p class="eyebrow">Verified backup · separate cleanup</p><h1>Archive recordings.</h1></div>
+      <div class="top-actions">
+        <nav class="menu-bar" aria-label="Main navigation"><a href="/">Dashboard</a><a href="/history">History</a><a href="/archive" class="active" aria-current="page">Archive</a><a href="/convert">Convert</a></nav>
+        <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
+      </div>
+    </header>
+    <main class="history-shell archive-main">
+      <section class="panel" aria-labelledby="automaticArchiveTitle">
+        <p class="eyebrow">One click · older than three calendar months only</p>
+        <h2 id="automaticArchiveTitle">Back up, verify, then remove old local recordings</h2>
+        <p class="archive-notice">Starting this run authorizes permanent local removal after verification. Only recordings saved strictly before the server-calculated three-month cutoff qualify. Original videos and matching converted MP4s are included; scanned-label history stays.</p>
+        <p id="automaticArchivePreview" role="status">Loading eligible recording count…</p>
+        <div class="archive-controls"><div class="field-row"><label for="automaticArchiveRate">Background I/O limit</label><select id="automaticArchiveRate"><option value="2">2 MiB/s · lowest impact</option><option value="5" selected>5 MiB/s · recommended</option><option value="10">10 MiB/s</option><option value="20">20 MiB/s · greater disk load</option></select></div><button id="startAutomaticArchive" class="danger" type="button" disabled>Back up, verify &amp; remove recordings older than 3 months</button><button id="refreshAutomaticArchive" type="button">Refresh automatic runs</button></div>
+        <p class="hint">One recording at a time. Archive copying/checksum reads pause while uploads are saving. Some disk impact is still possible; use a lower speed during busy hours. No automatic schedule or automatic deletion after restarting.</p>
+        <p id="automaticArchiveStatus" role="status" aria-live="polite"></p><div id="automaticArchiveRuns" class="archive-jobs"></div>
+      </section>
+      <section class="panel" aria-labelledby="archiveTitle">
+        <p class="eyebrow">1 · Choose older recordings</p><h2 id="archiveTitle">Back up first. Remove only after verification.</h2>
+        <p class="hint">Originals and their completed converted MP4s are included. Backing up never deletes local files. After verification, a separate confirmation is required to free disk space.</p>
+        <p id="archiveDestination" class="archive-notice" role="status">Checking archive configuration…</p>
+        <p><a href="/archive/settings">Configure backup drive / archive settings</a></p>
+        <form id="archivePreviewForm" class="archive-controls">
+          <div class="field-row"><label for="archiveCutoff">Saved on or before (UTC)</label><input id="archiveCutoff" type="date" required></div>
+          <button id="previewArchive" type="submit">Preview recordings</button>
+        </form>
+        <p id="archiveStatus" role="status" aria-live="polite"></p>
+        <div class="history-table-scroll"><table class="history-table archive-table"><caption class="history-sr-only">Recordings eligible for backup</caption><thead><tr><th scope="col">Select</th><th scope="col">Label</th><th scope="col">Saved</th><th scope="col">Mode</th><th scope="col">Original</th><th scope="col">Converted copies</th><th scope="col">Status</th></tr></thead><tbody id="archivePreviewRows"></tbody></table></div>
+        <div class="archive-controls"><button id="selectArchivePage" type="button">Select eligible on this page</button><span id="archiveSelected">No recordings selected.</span><button id="startArchiveBackup" type="button" disabled>Back up and verify</button></div>
+        <div id="archivePagination" class="pagination" hidden><button id="archivePrevious" type="button">Previous</button><span id="archivePageInfo"></span><button id="archiveNext" type="button">Next</button></div>
+      </section>
+      <section class="panel" aria-labelledby="archiveJobsTitle">
+        <div class="search-header"><div><p class="eyebrow">2 · Verify, then explicitly remove</p><h2 id="archiveJobsTitle">Backup jobs</h2></div><button id="refreshArchiveJobs" type="button">Refresh jobs</button></div>
+        <p class="hint">A checksum confirms copied bytes match; it cannot guarantee the NAS remains available or provide a second backup. Keep the NAS backed up too. Restore/streaming from NAS is not part of this page.</p>
+        <p id="archiveJobsStatus" role="status" aria-live="polite"></p>
+        <div id="archiveJobs" class="archive-jobs"></div>
+        <div id="archiveJobPagination" class="pagination" hidden><button id="archiveJobsPrevious" type="button">Previous</button><span id="archiveJobsPageInfo"></span><button id="archiveJobsNext" type="button">Next</button></div>
+      </section>
+    </main>
+    <dialog id="archiveRemovalDialog" class="archive-dialog" aria-labelledby="archiveRemovalTitle">
+      <h2 id="archiveRemovalTitle">Remove verified local copies?</h2>
+      <p>Only files in this verified backup will be removed. The app checks the NAS and file checksums again before cleanup. History is retained, but local playback will no longer be available.</p>
+      <p id="archiveRemovalSummary"></p>
+      <p id="archiveRemovalError" class="error" role="alert"></p>
+      <div class="archive-controls"><button id="cancelArchiveRemoval" type="button">Keep local files</button><button id="confirmArchiveRemoval" class="danger" type="button">Remove verified local copies</button></div>
+    </dialog>
+  </body>
+</html>

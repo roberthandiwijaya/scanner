@@ -36,9 +36,18 @@ if (-not $dockerReady) {
     exit 1
 }
 
-cmd /c "docker compose up -d >NUL 2>NUL"
+$composeArgs = @("compose", "-f", "docker-compose.yml")
+$driveConfig = Join-Path $projectDir "docker-compose.drive.yml"
+if (Test-Path -LiteralPath $driveConfig -PathType Leaf) {
+    $composeArgs += @("-f", "docker-compose.drive.yml")
+    Write-StartupLog "Including backup-drive configuration: docker-compose.drive.yml."
+}
+
+# If a configured drive is unavailable, fail rather than silently starting
+# a replacement recorder without its backup mount.
+& docker @composeArgs up -d *> $null
 if ($LASTEXITCODE -ne 0) {
-    Write-StartupLog "docker compose up -d failed with exit code $LASTEXITCODE."
+    Write-StartupLog "Docker Compose startup failed with exit code $LASTEXITCODE. Check Docker and the configured backup drive."
     exit $LASTEXITCODE
 }
 

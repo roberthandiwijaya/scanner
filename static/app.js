@@ -10,6 +10,10 @@ const stopBtn = document.querySelector("#stopBtn");
 const retryBtn = document.querySelector("#retryBtn");
 const saveBtn = document.querySelector("#saveBtn");
 const cameraOffBtn = document.querySelector("#cameraOffBtn");
+const scanCameraBtn = document.querySelector("#scanCameraBtn");
+const cancelScanBtn = document.querySelector("#cancelScanBtn");
+const cameraFacing = document.querySelector("#cameraFacing");
+const scanStatus = document.querySelector("#scanStatus");
 const videoUpload = document.querySelector("#videoUpload");
 const uploadBtn = document.querySelector("#uploadBtn");
 const refreshBtn = document.querySelector("#refreshBtn");
@@ -62,8 +66,173 @@ let duplicateDebounce = null;
 let orderLookupDebounce = null;
 let currentPage = 1;
 let currentTotalPages = 1;
-let orderLookupController = null;
 let startAfterOrderMatch = false;
+let activeScanContext = null;
+let recordingContext = null;
+let uploadContext = null;
+let startingRecording = false;
+let uploadingVideo = false;
+let inputRevision = 0;
+let debouncedSubmission = null;
+let lookupSequence = 0;
+let displayedScanContext = null;
+let scanning = false;
+let scanSession = 0;
+let scanTimer = null;
+let cameraGeneration = 0;
+let openingCamera = null;
+let savingRecording = false;
+
+function captureBusy() {
+  return startingRecording || uploadingVideo || savingRecording || recorder?.state === "recording";
+}
+
+function updateCameraControls() {
+  scanCameraBtn.disabled = captureBusy() || scanning;
+  cancelScanBtn.hidden = !scanning;
+  cameraFacing.disabled = captureBusy() || Boolean(openingCamera);
+  startBtn.disabled = scanning || captureBusy();
+  uploadBtn.disabled = scanning || captureBusy();
+  saveBtn.disabled = scanning || captureBusy() || !recordedBlob;
+  retryBtn.disabled = scanning || captureBusy() || !recordedBlob;
+}
+
+function focusInvoice() {
+  if (!window.matchMedia?.("(pointer: coarse)").matches) invoiceInput.focus();
+}
+
+function releaseCamera() {
+  cameraGeneration++;
+  const previous = stream;
+  stream = null;
+  preview.srcObject = null;
+  previous?.getTracks().forEach((track) => track.stop());
+  cameraOffBtn.disabled = true;
+}
+
+function stopCameraScan(text = "Scan cancelled.", release = true) {
+  scanning = false;
+  scanSession++;
+  window.clearTimeout(scanTimer);
+  scanTimer = null;
+  if (release) releaseCamera();
+  scanStatus.textContent = text;
+  updateCameraControls();
+}
+
+function trackingTextFromBarcode(value) {
+  // QR contents are identifiers, not navigation or structured commands.
+  const raw = String(value);
+  if (/[\u0000-\u001f\u007f]/.test(raw)) return null;
+  const text = raw.trim().toUpperCase();
+  if (!/^[A-Z0-9][A-Z0-9_-]{5,127}$/.test(text)) return null;
+  return text;
+}
+
+function acceptCameraResult(value, session) {
+  if (!scanning || session !== scanSession || captureBusy()) return false;
+  const tracking = trackingTextFromBarcode(value);
+  if (!tracking) {
+    scanStatus.textContent = "This code is not a plain tracking number. Scan the shipping barcode or type it manually.";
+    return false;
+  }
+  stopCameraScan(`Scanned ${tracking}. Review the order details.`, false);
+  invoiceInput.value = tracking;
+  handleInvoiceInput(false);
+  beginShippingOrderLookup(tracking, "camera");
+  return true;
+}
+
+async function startCameraScan() {
+  if (captureBusy() || scanning) return;
+  if (!window.ZXingBrowser?.BrowserMultiFormatReader) {
+    setMessage("Barcode decoder unavailable. Reload the page or enter the tracking number manually.", true);
+    return;
+  }
+  window.clearTimeout(orderLookupDebounce);
+  // Invalidate pending order callbacks before a new camera submission.
+  lookupSequence++;
+  displayedScanContext = null;
+  orderMatchBtn.disabled = true;
+  startAfterOrderMatch = false;
+  if (orderDialog.open) orderDialog.close();
+  scanning = true;
+  const session = ++scanSession;
+  scanStatus.textContent = "Opening camera… Allow camera access, then aim at the barcode.";
+  updateCameraControls();
+  try {
+    await ensureCamera(false);
+    if (!scanning || session !== scanSession) return;
+    const { BrowserMultiFormatReader, BarcodeFormat } = window.ZXingBrowser;
+    const reader = new BrowserMultiFormatReader();
+    reader.possibleFormats = [BarcodeFormat.CODE_39, BarcodeFormat.CODE_128, BarcodeFormat.ITF, BarcodeFormat.QR_CODE];
+    scanStatus.textContent = "Aim at one shipping barcode or tracking-number QR. Hold steady in good light.";
+    const decodeFrame = () => {
+      if (!scanning || session !== scanSession) return;
+      try {
+        if (preview.readyState >= 2) {
+          const result = reader.decode(preview);
+          if (acceptCameraResult(result.getText(), session)) return;
+        }
+      } catch (error) {
+        // Missing/partial barcodes are normal while aiming the camera.
+        if (!["NotFoundException", "ChecksumException", "FormatException"].includes(error.getKind?.() || error.name)) {
+          stopCameraScan("Scanner stopped. Try scanning again.");
+          setMessage(`Barcode scan failed: ${error.message}`, true);
+          return;
+        }
+      }
+      if (scanning && session === scanSession) scanTimer = window.setTimeout(decodeFrame, 250);
+    };
+    decodeFrame();
+  } catch (error) {
+    if (session !== scanSession) return;
+    stopCameraScan("Camera unavailable. Check camera permission and trusted HTTPS.");
+    setMessage(`Could not scan: ${error.message}`, true);
+  }
+}
+
+function newSubmissionId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  // getRandomValues also works on LAN HTTP pages where randomUUID is unavailable.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function createScanContext(label, mode, source = "scan") {
+  return { label, mode, source, submissionId: newSubmissionId(), event: null, pending: null, consumed: false };
+}
+
+async function persistScan(context) {
+  if (context.event) return context.event;
+  if (!context.pending) {
+    context.pending = (async () => {
+      const response = await fetch("/api/scan-events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ submission_id: context.submissionId, tracking_number: context.label, mode: context.mode, source: context.source })
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Scan history could not be saved. Submit the label again to retry.");
+      context.event = payload;
+      return payload;
+    })();
+  }
+  try {
+    const event = await context.pending;
+    context.persistenceFailed = false;
+    return event;
+  } catch (error) {
+    context.persistenceFailed = true;
+    throw error;
+  } finally {
+    context.pending = null;
+  }
+}
+
+function matchingScanContext(label, mode) {
+  return activeScanContext && !activeScanContext.consumed && activeScanContext.label === label && activeScanContext.mode === mode ? activeScanContext : null;
+}
 
 function selectedMode() {
   return modeInputs.find((input) => input.checked).value;
@@ -100,6 +269,7 @@ function uppercaseInvoiceInput() {
 }
 
 function setRecordingUi(isRecording) {
+  uploadBtn.disabled = isRecording;
   startBtn.disabled = isRecording;
   stopBtn.disabled = !isRecording;
   retryBtn.disabled = isRecording || !recordedBlob;
@@ -111,6 +281,7 @@ function setRecordingUi(isRecording) {
   });
   audioEnabledInput.disabled = isRecording;
   autoStartEnabledInput.disabled = isRecording;
+  updateCameraControls();
 }
 
 function setCountdownUi(isCountingDown) {
@@ -211,54 +382,64 @@ function renderOrderDetails(order) {
   orderDetails.hidden = false;
 }
 
-async function lookupShippingOrder(trackingNumber) {
-  orderLookupController?.abort();
-  orderLookupController = new AbortController();
+async function lookupShippingOrder(context) {
+  const sequence = ++lookupSequence;
+  displayedScanContext = null;
+  orderMatchBtn.disabled = true;
   orderDetails.hidden = true;
-  setOrderLookupStatus(`Looking up ${trackingNumber}...`);
+  setOrderLookupStatus(`Saving scan and looking up ${context.label}...`);
   openOrderDialog();
 
   try {
-    const response = await fetch(
-      `/api/orders/by-tracking-number?tracking_number=${encodeURIComponent(trackingNumber)}`,
-      { signal: orderLookupController.signal }
-    );
+    const event = await persistScan(context);
+    // Do not abort persistence when the dialog closes or another scan starts.
+    const response = await fetch(`/api/scan-events/${event.id}/lookup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mutation_token: event.mutation_token })
+    });
     const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || "Could not find shipping information.");
-    }
-
+    if (sequence !== lookupSequence) return;
+    if (!response.ok) throw new Error(payload.error || "Could not find shipping information.");
+    displayedScanContext = context;
+    orderMatchBtn.disabled = false;
     renderOrderDetails(payload);
   } catch (error) {
-    if (error.name === "AbortError") {
-      return;
-    }
+    if (sequence !== lookupSequence) return;
     startAfterOrderMatch = false;
     orderDetails.hidden = true;
-    setOrderLookupStatus(error.message || "Could not find shipping information.", true);
+    setOrderLookupStatus(context.event ? error.message : `Scan history could not be saved: ${error.message}`, true);
   }
 }
 
 function confirmOrderMatch() {
-  const trackingNumber = orderTrackingNumber.textContent;
+  const context = displayedScanContext;
+  if (!context || context !== activeScanContext) return;
+  const trackingNumber = context.label;
   const shouldStartRecording = startAfterOrderMatch;
   startAfterOrderMatch = false;
   setMessage(`Product details confirmed for ${trackingNumber}.`);
   orderDialog.close();
 
   if (shouldStartRecording) {
-    startRecording();
+    startRecording(context);
   }
 }
 
-function beginShippingOrderLookup(trackingNumber) {
-  if (!trackingNumber) {
+function beginShippingOrderLookup(trackingNumber, trigger = "enter") {
+  if (!trackingNumber || scanning || captureBusy()) return;
+  if (trigger === "enter" && debouncedSubmission?.revision === inputRevision && !debouncedSubmission.enterSeen) {
+    debouncedSubmission.enterSeen = true;
     return;
   }
-
+  const mode = selectedMode();
+  // A failed persistence attempt retries its original submission identifier.
+  const retry = matchingScanContext(trackingNumber, mode);
+  const context = retry?.persistenceFailed ? retry : createScanContext(trackingNumber, mode);
+  activeScanContext = context;
+  if (trigger === "debounce") debouncedSubmission = { revision: inputRevision, enterSeen: false };
   startAfterOrderMatch = autoStartEnabled();
-  lookupShippingOrder(trackingNumber);
+  lookupShippingOrder(context);
 }
 
 function queueShippingOrderLookup() {
@@ -271,7 +452,7 @@ function queueShippingOrderLookup() {
 
   orderLookupDebounce = window.setTimeout(() => {
     if (invoiceInput.value.trim() === trackingNumber) {
-      beginShippingOrderLookup(trackingNumber);
+      beginShippingOrderLookup(trackingNumber, "debounce");
     }
   }, ORDER_LOOKUP_DELAY_MS);
 }
@@ -293,31 +474,66 @@ async function runCountdown() {
   countdown.textContent = "";
 }
 
-async function ensureCamera() {
-  if (stream) {
-    return stream;
+async function ensureCamera(withAudio = audioEnabled()) {
+  if (!navigator.mediaDevices?.getUserMedia || window.isSecureContext === false) {
+    throw new Error("Use trusted HTTPS and allow camera access on this device.");
   }
-
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: audioEnabled()
-      ? {
-          echoCancellation: true,
-          noiseSuppression: true
-        }
-      : false,
-    video: {
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      frameRate: { ideal: 24, max: 30 }
+  if (openingCamera) {
+    try { await openingCamera; } catch (_) { /* A cancelled request may be retried. */ }
+    return ensureCamera(withAudio);
+  }
+  const facing = cameraFacing.value || "environment";
+  const videoTrack = stream?.getVideoTracks().find((track) => track.readyState === "live");
+  const hasAudio = Boolean(stream?.getAudioTracks().some((track) => track.readyState === "live"));
+  if (videoTrack && hasAudio === withAudio && stream.requestedFacing === facing) return stream;
+  releaseCamera();
+  const generation = cameraGeneration;
+  const operation = (async () => {
+    const camera = await navigator.mediaDevices.getUserMedia({
+      audio: withAudio ? { echoCancellation: true, noiseSuppression: true } : false,
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 24, max: 30 }
+      }
+    });
+    if (generation !== cameraGeneration) {
+      camera.getTracks().forEach((track) => track.stop());
+      throw new Error("Camera request cancelled. Try again.");
     }
-  });
-  preview.srcObject = stream;
-  cameraStatus.textContent = "Camera ready";
-  cameraOffBtn.disabled = false;
-  return stream;
+    camera.requestedFacing = facing;
+    stream = camera;
+    preview.srcObject = camera;
+    try {
+      await preview.play();
+    } catch (error) {
+      if (stream === camera) releaseCamera();
+      throw error;
+    }
+    if (generation !== cameraGeneration) throw new Error("Camera request cancelled. Try again.");
+    camera.getVideoTracks().forEach((track) => track.addEventListener("ended", () => {
+      if (stream !== camera) return;
+      if (scanning) stopCameraScan("Camera interrupted. Tap Scan with camera to retry.");
+      else releaseCamera();
+      if (recorder?.state === "recording") stopRecording();
+      cameraStatus.textContent = "Camera interrupted";
+    }));
+    cameraStatus.textContent = "Camera ready";
+    cameraOffBtn.disabled = false;
+    return camera;
+  })();
+  openingCamera = operation;
+  updateCameraControls();
+  try { return await operation; }
+  finally {
+    if (openingCamera === operation) openingCamera = null;
+    updateCameraControls();
+  }
 }
 
 function getMimeType() {
+  if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
   const options = audioEnabled()
     ? [
         "video/webm;codecs=vp9,opus",
@@ -331,26 +547,42 @@ function getMimeType() {
         "video/webm"
       ];
 
+  options.push("video/mp4");
   return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
-async function startRecording() {
-  const invoice = invoiceInput.value.trim();
+async function startRecording(requestedContext = null) {
+  if (scanning || captureBusy()) return;
+  const context = requestedContext?.submissionId ? requestedContext : null;
+  const invoice = context?.label || invoiceInput.value.trim();
+  const mode = context?.mode || selectedMode();
 
   if (!invoice) {
     setMessage("Scan or type the invoice / shipping receipt first.", true);
-    invoiceInput.focus();
+    focusInvoice();
     return;
   }
 
   const mimeType = getMimeType();
   if (!mimeType) {
-    setMessage("This browser cannot record WebM video. Try Chrome, Edge, or Firefox.", true);
-    cameraStatus.textContent = "WebM unavailable";
+    setMessage("This browser cannot record supported video. Use an up-to-date Android Chrome or iPhone Safari, or upload an existing video.", true);
+    cameraStatus.textContent = "Recording unavailable";
     return;
   }
 
+  if (recordedBlob && !window.confirm("Discard the unsaved recording and start a new one?")) return;
+  recordedBlob = null;
+  chunks = [];
+  recordedDurationMs = 0;
+  startingRecording = true;
+  setRecordingUi(true);
+  stopBtn.disabled = true;
+  uploadBtn.disabled = true;
+  window.clearTimeout(orderLookupDebounce);
+  recordingContext = context || matchingScanContext(invoice, mode) || createScanContext(invoice, mode, "manual_recording");
+  activeScanContext = recordingContext;
   try {
+    await persistScan(recordingContext);
     const camera = await ensureCamera();
     chunks = [];
     recordedBlob = null;
@@ -359,6 +591,9 @@ async function startRecording() {
     setMessage("Get ready...");
 
     await runCountdown();
+    if (stream !== camera || !camera.getVideoTracks().some((track) => track.readyState === "live")) {
+      throw new Error("Camera was interrupted during countdown. Please try again.");
+    }
 
     recorder = new MediaRecorder(camera, { mimeType });
 
@@ -386,8 +621,12 @@ async function startRecording() {
     countdown.hidden = true;
     countdown.textContent = "";
     setRecordingUi(false);
-    setMessage(`Camera error: ${error.message}`, true);
-    cameraStatus.textContent = "Camera unavailable";
+    setMessage(`Could not start recording: ${error.message}`, true);
+    cameraStatus.textContent = "Recording unavailable";
+  } finally {
+    startingRecording = false;
+    uploadBtn.disabled = recorder?.state === "recording";
+    updateCameraControls();
   }
 }
 
@@ -398,20 +637,20 @@ function stopRecording() {
 }
 
 function stopWebcamPreview() {
-  if (recorder && recorder.state === "recording") {
+  if (startingRecording || (recorder && recorder.state === "recording")) {
     setMessage("Stop the recording before turning off the webcam preview.", true);
     return;
   }
 
+  if (scanning) stopCameraScan();
+  if (openingCamera) releaseCamera();
   if (!stream) {
     setMessage("Webcam preview is already stopped.");
     cameraOffBtn.disabled = true;
     return;
   }
 
-  stream.getTracks().forEach((track) => track.stop());
-  stream = null;
-  preview.srcObject = null;
+  releaseCamera();
   countdown.hidden = true;
   countdown.textContent = "";
   cameraOffBtn.disabled = true;
@@ -439,6 +678,7 @@ function retryRecording() {
 }
 
 function resetRecordingDraft() {
+  recordingContext = null;
   chunks = [];
   recordedBlob = null;
   recordedDurationMs = 0;
@@ -448,12 +688,13 @@ function resetRecordingDraft() {
   cameraStatus.textContent = stream ? "Camera ready" : "Camera idle";
 }
 
-async function uploadVideoBlob(videoBlob, fileName = "recording.webm", expectedDurationMs = null) {
-  const invoice = invoiceInput.value.trim();
-
+async function uploadVideoBlob(videoBlob, fileName = "recording.webm", expectedDurationMs = null, context) {
+  const event = await persistScan(context);
   const form = new FormData();
-  form.append("invoice", invoice);
-  form.append("mode", selectedMode());
+  form.append("invoice", context.label);
+  form.append("mode", context.mode);
+  form.append("scan_event_id", String(event.id));
+  form.append("scan_event_token", event.mutation_token);
   form.append("video", videoBlob, fileName);
   if (expectedDurationMs !== null) {
     form.append("duration_ms", String(Math.max(Math.round(expectedDurationMs), 0)));
@@ -469,9 +710,11 @@ async function uploadVideoBlob(videoBlob, fileName = "recording.webm", expectedD
     throw new Error(payload.error || "Save failed.");
   }
 
+  context.consumed = true;
   searchInput.value = payload.invoice;
   currentPage = 1;
-  await Promise.all([loadResults(payload.invoice), loadSummary(), checkDuplicateInvoice()]);
+  // A refresh failure must not turn a successful save into a second upload.
+  await Promise.allSettled([loadResults(payload.invoice), loadSummary(), checkDuplicateInvoice()]);
   return payload;
 }
 
@@ -480,42 +723,62 @@ async function hasWebmHeader(videoBlob) {
   return header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3;
 }
 
+async function recordingExtension(videoBlob) {
+  const mime = videoBlob.type.split(";")[0].toLowerCase();
+  if (mime === "video/webm") {
+    if (!(await hasWebmHeader(videoBlob))) throw new Error("Recording file is incomplete. Please retry the recording.");
+    return "webm";
+  }
+  if (mime === "video/mp4") {
+    const header = new Uint8Array(await videoBlob.slice(0, 12).arrayBuffer());
+    if (header.length < 12 || String.fromCharCode(...header.slice(4, 8)) !== "ftyp") {
+      throw new Error("MP4 recording file is incomplete. Please retry the recording.");
+    }
+    return "mp4";
+  }
+  throw new Error("Unsupported recording format. Please retry in a supported browser.");
+}
+
 async function saveRecording() {
-  const invoice = invoiceInput.value.trim();
+  if (scanning || captureBusy()) return;
+  const invoice = recordingContext?.label;
 
   if (!recordedBlob || !invoice) {
     setMessage("Nothing to save yet.", true);
     return;
   }
 
-  saveBtn.disabled = true;
+  savingRecording = true;
+  setRecordingUi(true);
+  stopBtn.disabled = true;
   setMessage("Saving recording...");
 
   try {
-    if (!(await hasWebmHeader(recordedBlob))) {
-      throw new Error("Recording file is incomplete. Please retry the recording.");
-    }
-
-    await uploadVideoBlob(recordedBlob, `${invoice}.webm`, recordedDurationMs);
+    const extension = await recordingExtension(recordedBlob);
+    await uploadVideoBlob(recordedBlob, `${invoice}.${extension}`, recordedDurationMs, recordingContext);
     setMessage("Saved locally.");
     resetRecordingDraft();
-    invoiceInput.value = "";
+    if (invoiceInput.value.trim() === invoice) invoiceInput.value = "";
     duplicateWarning.textContent = "";
     duplicateWarning.classList.remove("active");
-    invoiceInput.focus();
+    focusInvoice();
   } catch (error) {
     setMessage(`Save error: ${error.message}`, true);
-    saveBtn.disabled = false;
+  } finally {
+    savingRecording = false;
+    setRecordingUi(false);
   }
 }
 
 async function uploadExistingVideo() {
+  if (scanning || captureBusy()) return;
   const invoice = invoiceInput.value.trim();
+  const mode = selectedMode();
   const file = videoUpload.files[0];
 
   if (!invoice) {
     setMessage("Scan or type the invoice / shipping receipt first.", true);
-    invoiceInput.focus();
+    focusInvoice();
     return;
   }
 
@@ -525,21 +788,33 @@ async function uploadExistingVideo() {
     return;
   }
 
+  if (!uploadContext || uploadContext.file !== file || uploadContext.context.label !== invoice || uploadContext.context.mode !== mode || uploadContext.context.consumed) {
+    uploadContext = { file, context: matchingScanContext(invoice, mode) || createScanContext(invoice, mode, "manual_upload") };
+  }
+  const context = uploadContext.context;
+  uploadingVideo = true;
+  updateCameraControls();
   uploadBtn.disabled = true;
+  startBtn.disabled = true;
+  window.clearTimeout(orderLookupDebounce);
   setMessage("Uploading video...");
 
   try {
-    await uploadVideoBlob(file, file.name);
+    await uploadVideoBlob(file, file.name, null, context);
     setMessage("Uploaded and saved locally.");
+    uploadContext = null;
     videoUpload.value = "";
-    invoiceInput.value = "";
+    if (invoiceInput.value.trim() === invoice) invoiceInput.value = "";
     duplicateWarning.textContent = "";
     duplicateWarning.classList.remove("active");
-    invoiceInput.focus();
+    focusInvoice();
   } catch (error) {
     setMessage(`Upload error: ${error.message}`, true);
   } finally {
+    uploadingVideo = false;
+    updateCameraControls();
     uploadBtn.disabled = false;
+    startBtn.disabled = false;
   }
 }
 
@@ -846,11 +1121,20 @@ audioEnabledInput.addEventListener("change", resetCameraForAudioChange);
 autoStartEnabledInput.addEventListener("change", () => {
   localStorage.setItem("scanner-start-on-enter", autoStartEnabled() ? "1" : "0");
 });
-invoiceInput.addEventListener("input", () => {
+function handleInvoiceInput(scheduleLookup = true) {
+  if (scanning) stopCameraScan("Scan cancelled because the tracking input changed.");
+  window.clearTimeout(orderLookupDebounce);
+  inputRevision++;
+  debouncedSubmission = null;
+  displayedScanContext = null;
+  orderMatchBtn.disabled = true;
+  lookupSequence++;
+  startAfterOrderMatch = false;
   uppercaseInvoiceInput();
   queueDuplicateCheck();
-  queueShippingOrderLookup();
-});
+  if (scheduleLookup) queueShippingOrderLookup();
+}
+invoiceInput.addEventListener("input", () => handleInvoiceInput());
 invoiceInput.addEventListener("blur", () => checkDuplicateInvoice());
 orderDialogClose.addEventListener("click", () => orderDialog.close());
 orderMatchBtn.addEventListener("click", confirmOrderMatch);
@@ -860,16 +1144,15 @@ orderDialog.addEventListener("click", (event) => {
   }
 });
 orderDialog.addEventListener("close", () => {
-  orderLookupController?.abort();
-  orderLookupController = null;
+  lookupSequence++;
   startAfterOrderMatch = false;
   if (!invoiceInput.disabled) {
-    invoiceInput.focus();
+    focusInvoice();
   }
 });
 
 invoiceInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") {
+  if (event.key !== "Enter" || event.repeat) {
     return;
   }
 
@@ -882,6 +1165,19 @@ invoiceInput.addEventListener("keydown", (event) => {
   } else {
     setMessage("Scan or type the invoice / shipping receipt first.", true);
   }
+});
+
+scanCameraBtn.addEventListener("click", startCameraScan);
+cancelScanBtn.addEventListener("click", () => stopCameraScan());
+cameraFacing.addEventListener("change", () => {
+  if (captureBusy()) return;
+  const restart = scanning;
+  stopCameraScan(restart ? "Switching camera…" : "Camera changed.");
+  if (restart) startCameraScan();
+});
+window.addEventListener("pagehide", () => {
+  stopCameraScan("Camera stopped.");
+  if (recorder?.state === "recording") stopRecording();
 });
 
 initTheme();

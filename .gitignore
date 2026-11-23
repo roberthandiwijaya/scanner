@@ -5,3 +5,5 @@ __pycache__/
 venv/
 .env
 .docker-config/
+docker-compose.archive.yml
+docker-compose.drive.yml

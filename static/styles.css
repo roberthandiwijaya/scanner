@@ -247,6 +247,7 @@ label {
 }
 
 input[type="text"],
+input[type="search"],
 input:not([type]),
 input[type="date"],
 input[type="file"],
@@ -837,8 +838,12 @@ button:disabled {
   margin: 14px 0 0;
 }
 
+.order-item-details dt {
+  font-size: 12px;
+}
+
 .order-item-details dd {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .order-items-empty {
@@ -902,7 +907,125 @@ button:disabled {
   }
 }
 
+.history-shell {
+  width: min(1600px, calc(100% - 32px));
+  margin: 0 auto;
+}
+
+.history-main { padding-bottom: 32px; }
+.history-main [hidden] { display: none; }
+.history-panel { min-width: 0; }
+.history-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: end;
+  gap: 14px;
+  margin-top: 20px;
+}
+.history-search { grid-column: span 2; }
+.history-table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.history-table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+.history-table th {
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.history-table th, .history-table td {
+  padding: 14px 12px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+.history-table tbody tr:last-child td { border-bottom: 0; }
+.history-table tbody tr:hover { background: var(--panel-soft); }
+.history-table td { max-width: 260px; overflow-wrap: anywhere; }
+.history-table td:first-child { min-width: 140px; }
+.history-table td:nth-child(2) { font-weight: 700; }
+.history-table td:nth-child(6) { min-width: 200px; }
+.history-table td:last-child a {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.history-secondary {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.history-badge { font-size: 12px; font-weight: 700; }
+.history-success, .history-available { color: var(--accent-strong); }
+.history-error, .history-missing { color: var(--danger); }
+.history-pending, .history-not_found { color: var(--warning); }
+.history-products { padding-left: 18px; margin: 10px 0 0; }
+.history-products li + li { margin-top: 12px; }
+.history-table summary { cursor: pointer; }
+.history-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.archive-main { display: grid; gap: 24px; padding-bottom: 32px; }
+.archive-main [hidden] { display: none; }
+.archive-main .panel { min-width: 0; }
+.archive-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+.archive-controls .field-row { min-width: 240px; margin: 0; }
+.archive-controls span { align-self: center; }
+.archive-notice { padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-soft); }
+.archive-table { min-width: 900px; }
+.archive-table td:first-child { min-width: 65px; }
+.archive-table input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+.archive-jobs { display: grid; gap: 16px; }
+.archive-job { border: 1px solid var(--line); border-radius: 14px; padding: 20px; background: var(--panel-strong); }
+.archive-job h3 { margin: 0 0 8px; }
+.archive-job details { margin-top: 14px; }
+.archive-job summary { cursor: pointer; }
+.archive-file-list { padding-left: 20px; overflow-wrap: anywhere; }
+.archive-file-list li + li { margin-top: 14px; }
+.archive-dialog { width: min(640px, calc(100% - 32px)); max-height: 85vh; overflow-y: auto; padding: 28px; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); }
+.archive-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.history-archived { color: var(--accent-strong); }
+
+.camera-scan-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 8px;
+}
+
+.camera-scan-controls button,
+.camera-scan-controls select {
+  min-height: 44px;
+}
+
+.camera-scan-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#scanStatus { overflow-wrap: anywhere; }
+
 @media (max-width: 860px) {
+  .history-filters { grid-template-columns: 1fr 1fr; }
+  .history-search { grid-column: 1 / -1; }
   .topbar {
     align-items: flex-start;
     flex-direction: column;

@@ -1,0 +1,15 @@
+# Copy to docker-compose.drive.yml (gitignored).
+# Set BACKUP_DRIVE_PATH to an EXISTING folder on another physical hard drive,
+# e.g. D:/ScannerBackups. Docker Desktop must have access to that drive.
+# This does not automatically mount/discover Windows disks from the website.
+# docker compose -f docker-compose.yml -f docker-compose.drive.yml up -d --build
+services:
+  recorder:
+    environment:
+      ARCHIVE_SETTINGS_ROOT: /backup-drive
+    volumes:
+      - type: bind
+        source: ${BACKUP_DRIVE_PATH:?Set an existing folder on the backup hard drive}
+        target: /backup-drive
+        bind:
+          create_host_path: false

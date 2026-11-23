@@ -15,6 +15,8 @@
       <div class="top-actions">
         <nav class="menu-bar" aria-label="Main navigation">
           <a class="active" href="/">Dashboard</a>
+          <a href="/history">History</a>
+          <a href="/archive">Archive</a>
           <a href="/convert">Convert</a>
         </nav>
         <button id="themeToggle" class="theme-toggle" type="button">Dark mode</button>
@@ -48,7 +50,7 @@
       <section class="panel recorder-panel">
         <div class="field-row">
           <label for="invoice">Invoice / shipping receipt</label>
-          <input id="invoice" autocomplete="off" autofocus placeholder="Scan barcode here">
+          <input id="invoice" autocomplete="off" placeholder="Scan or type tracking number">
           <p class="inline-warning" id="duplicateWarning"></p>
         </div>
 
@@ -70,6 +72,18 @@
             Start after match
           </label>
         </div>
+
+        <div class="camera-scan-controls">
+          <button id="scanCameraBtn" type="button">Scan with camera</button>
+          <button id="cancelScanBtn" type="button" hidden>Cancel scan</button>
+          <label for="cameraFacing">Camera
+            <select id="cameraFacing">
+              <option value="environment">Rear (phone)</option>
+              <option value="user">Front / webcam</option>
+            </select>
+          </label>
+        </div>
+        <p id="scanStatus" class="hint" role="status" aria-live="polite">Scan a shipping barcode or a QR containing a tracking number.</p>
 
         <div class="video-shell">
           <video id="preview" autoplay muted playsinline></video>
@@ -268,6 +282,7 @@
         maxUploadMb: {{ max_upload_mb|tojson }}
       };
     </script>
+    <script src="/static/vendor/zxing-browser-0.2.1.min.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

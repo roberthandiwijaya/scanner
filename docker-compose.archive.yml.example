@@ -1,0 +1,21 @@
+# Optional override. First provision an external Docker volume backed by your NAS.
+# Never point this volume at the local data folder or use a local fallback volume.
+# Copy to docker-compose.archive.yml and set the variables outside source control.
+# docker compose -f docker-compose.yml -f docker-compose.archive.yml up -d --build
+services:
+  recorder:
+    environment:
+      ARCHIVE_DIR: /archive
+      ARCHIVE_LABEL: ${ARCHIVE_LABEL:-Office NAS}
+      ARCHIVE_DESTINATION_ID: ${ARCHIVE_DESTINATION_ID:?Set the UUID from the NAS sentinel file}
+    volumes:
+      - type: volume
+        source: recorder_nas_archive
+        target: /archive
+        volume:
+          nocopy: true
+
+volumes:
+  recorder_nas_archive:
+    external: true
+    name: ${ARCHIVE_VOLUME_NAME:?Set the pre-provisioned NAS-backed Docker volume name}
