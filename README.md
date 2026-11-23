@@ -259,6 +259,41 @@ Startup logs are written to:
 data/startup.log
 ```
 
+### Automatic LAN Port Forwarding With Kiri
+
+Use this setup when Docker runs in the `kiri` WSL distribution on Windows. It refreshes the Windows forwarding rules for ports `9443` (HTTPS) and `8000` (HTTP) using Kiri's current IPv4 address.
+
+1. In `docker-compose.yml`, ensure Caddy's published port is `"9443:8443"` and the recorder's is `"8000:8000"`. If you changed either mapping, apply it with `docker compose up -d`, using your usual Compose overrides.
+2. Sign in to the Windows account that runs Kiri. Open **Windows PowerShell as administrator** using that same account, then change to the scanner repository directory.
+3. Run the installation commands below. They copy the scripts to Program Files, register the task, and allow HTTPS from the local subnet on the Windows **Private** network profile.
+
+```powershell
+$scannerFolder = Join-Path $env:ProgramFiles 'Scanner Port Forwarding'
+New-Item -ItemType Directory -Path $scannerFolder -Force | Out-Null
+Copy-Item -LiteralPath '.\scripts\update-kiri-port-forwarding.ps1', '.\scripts\run-kiri-port-forwarding.vbs' -Destination $scannerFolder -Force
+
+$taskName = 'Scanner Kiri Port Forwarding'
+$account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$launcher = Join-Path $scannerFolder 'run-kiri-port-forwarding.vbs'
+$action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\wscript.exe" -Argument ('//B //NoLogo "' + $launcher + '"') -WorkingDirectory $scannerFolder
+$logon = New-ScheduledTaskTrigger -AtLogOn -User $account
+$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$repeat.Repetition.StopAtDurationEnd = $false
+$principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger @($logon, $repeat) -Principal $principal -Settings $settings -Force | Out-Null
+
+$firewallRule = 'Scanner-LAN-HTTPS-9443'
+if (-not (Get-NetFirewallRule -Name $firewallRule -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -Name $firewallRule -DisplayName 'Scanner HTTPS 9443 (Private LAN)' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9443 -Profile Private -RemoteAddress LocalSubnet | Out-Null
+}
+Start-ScheduledTask -TaskName $taskName
+```
+
+The task runs silently at sign-in and once a minute while that Windows account is signed in. It skips checks when Kiri is stopped and updates the rules when it finds a changed address or a missing rule. The Program Files location keeps the elevated task's scripts in an administrator-controlled folder.
+
+In Task Scheduler, check that **Scanner Kiri Port Forwarding** has a last run result of `0x0`. With Kiri and the scanner running, `netsh interface portproxy show all` should show ports `9443` and `8000` forwarding to Kiri's current IP. From another LAN computer, open `https://<windows-lan-ip>:9443` using the Windows Ethernet or Wi-Fi IPv4 address from `ipconfig`.
+
 ## Hardware Guidance
 
 For an i3-3xxx computer:
